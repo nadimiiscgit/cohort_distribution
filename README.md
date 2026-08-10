@@ -259,10 +259,11 @@ which backs up the database, fast-forwards the branch, syncs the venv, runs
 `verify.py`, renders `landing/dist/`, and restarts the service — failing before
 the restart if verification does not pass.
 
-The landing page is served as static files from `landing/dist/`. It is not
-built from `landing/` directly because `index.html` carries a
-`__BOT_USERNAME__` placeholder that the deploy script substitutes from `.env`;
-that keeps a deploy-specific value out of the repo.
+The landing page is a single self-contained `index.html` — CSS inline, no
+images, no external requests — served from `landing/dist/`. It is not served
+from `landing/` directly because the file carries a `__BOT_USERNAME__`
+placeholder that the deploy script substitutes from `.env`; that keeps a
+deploy-specific value out of the repo.
 
 ```bash
 journalctl -u cohort-bot -f          # logs
