@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>One question a day</title>
+<meta name="description" content="A daily medical MCQ on Telegram, with the reasoning spelled out.">
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="styles.css">
+<!--
+  The bot username in the button below is a placeholder that deploy/deploy.sh
+  substitutes from TELEGRAM_BOT_USERNAME. Open this file directly during
+  development and the button points at that placeholder — that is expected;
+  run the deploy script to render a working page into landing/dist/.
+
+  No external fonts, scripts, or analytics: the page loads two files from our
+  own origin and nothing else. Attribution is carried in the outbound link, so
+  there is nothing to track on this side and no cookie banner to write.
+-->
+</head>
+<body>
+
+<main>
+  <header class="hero">
+    <p class="eyebrow">Free · No signup · Leave anytime</p>
+    <h1>One question a day.<br>The reasoning included.</h1>
+    <p class="lede">
+      A single exam-style question lands in your Telegram. You answer, you find
+      out why. No app to install, no account to make, no feed to scroll.
+    </p>
+    <a class="cta" id="cta" href="https://t.me/__BOT_USERNAME__">Open in Telegram</a>
+    <p class="fine">Works with the Telegram app you already have.</p>
+  </header>
+
+  <section class="how">
+    <h2>How it works</h2>
+    <ol>
+      <li>
+        <h3>Tap the button</h3>
+        <p>Telegram opens, you press start. That's the whole signup.</p>
+      </li>
+      <li>
+        <h3>Answer a question</h3>
+        <p>Four options, one tap. Takes under a minute.</p>
+      </li>
+      <li>
+        <h3>Read why</h3>
+        <p>The explanation arrives with the answer, not on a separate page.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="faq">
+    <h2>Questions you might have</h2>
+
+    <details>
+      <summary>What does it cost?</summary>
+      <p>Nothing. There is no paid tier on this bot.</p>
+    </details>
+
+    <details>
+      <summary>What do you store about me?</summary>
+      <p>
+        Your Telegram chat ID, the link you arrived from, and which questions
+        you've answered — that's what makes it possible to not send you the same
+        question twice. Nothing is sold or shared. Send <code>/stop</code> and
+        the messages stop.
+      </p>
+    </details>
+
+    <details>
+      <summary>How many questions can I get?</summary>
+      <p>
+        Up to five a day, on demand. Send <code>/question</code> whenever you
+        want the next one.
+      </p>
+    </details>
+
+    <details>
+      <summary>Can I pick a subject?</summary>
+      <p>
+        Yes — <code>/question Pharmacology</code> pulls from that subject alone.
+      </p>
+    </details>
+  </section>
+
+  <footer>
+    <p>Send <code>/stop</code> in the chat to stop receiving messages.</p>
+  </footer>
+</main>
+
+<script>
+  // Attribution: a campaign link is /?s=<code>. We forward that code into the
+  // Telegram deep link as the ?start= payload, which the bot records on first
+  // contact. If there's no code, the plain link is left alone and the bot
+  // falls back to DEFAULT_SOURCE. Nothing is stored client-side.
+  (function () {
+    var code = new URLSearchParams(window.location.search).get('s');
+    if (!code) return;
+    var safe = code.replace(/[^A-Za-z0-9_-]+/g, '-').toLowerCase().slice(0, 64);
+    if (!safe) return;
+    var cta = document.getElementById('cta');
+    cta.href = cta.href.split('?')[0] + '?start=' + safe;
+  })();
+</script>
+
+</body>
+</html>
