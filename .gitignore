@@ -1,0 +1,51 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+venv/
+.venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Secrets / environment ----
+.env
+.env.*
+!.env.example
+
+# ---- Databases & backups ----
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+backups/
+
+# ---- Question data ----
+# Real question data never lands in git. Only the schema sample does.
+/data/*.csv
+!/data/sample.csv
+
+# ---- Landing build output ----
+/landing/dist/
+
+# ---- Logs & OS cruft ----
+*.log
+logs/
+.DS_Store
+Thumbs.db
+
+# ---- Editors ----
+.idea/
+.vscode/
+*.swp
