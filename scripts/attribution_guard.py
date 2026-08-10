@@ -10,8 +10,9 @@ count. Non-zero means at least one row leaked through a path that did not
 record where the person came from — which is unrecoverable after the fact, so
 it is worth catching before a campaign rather than after.
 
-`source` is the column the request calls `source_channel`: `subscribers.source`
-in the schema, and the `source` column of `attribution_events`.
+`source` is the column referred to elsewhere as `source_channel`:
+`subscribers.source` in the schema, and the `source` column of
+`attribution_events`.
 
 A missing database is a failure, not a pass. A pre-launch check that reports
 "all clear" against a file that does not exist is worse than no check.
@@ -35,17 +36,37 @@ OK = "  ok   "
 WARN = " warn  "
 FAIL = " FAIL  "
 
-_failures = 0
-_warnings = 0
+REQUIRED_TABLES = {"subscribers", "attribution_events"}
+
+# Both the subscriber's source and an event's source are checked with this.
+EMPTY = "source IS NULL OR trim(source) = ''"
 
 
-def report(level: str, message: str) -> None:
-    global _failures, _warnings
-    if level == FAIL:
-        _failures += 1
-    elif level == WARN:
-        _warnings += 1
-    print(f"[{level}] {message}")
+class Findings:
+    """Tallies results as checks run.
+
+    A class rather than module-level counters so a caller — the test suite,
+    or anything that wants to audit twice — gets a fresh count each time
+    instead of inheriting the previous run's.
+    """
+
+    def __init__(self, echo: bool = True) -> None:
+        self.failures = 0
+        self.warnings = 0
+        self.echo = echo
+
+    def add(self, level: str, message: str) -> None:
+        if level == FAIL:
+            self.failures += 1
+        elif level == WARN:
+            self.warnings += 1
+        if self.echo:
+            print(f"[{level}] {message}")
+
+    def exit_code(self, strict: bool = False) -> int:
+        if self.failures:
+            return 1
+        return 1 if (strict and self.warnings) else 0
 
 
 def listing(values: list[object], limit: int) -> str:
@@ -59,10 +80,21 @@ def listing(values: list[object], limit: int) -> str:
 # Checks
 # --------------------------------------------------------------------------
 
-EMPTY = "source IS NULL OR trim(source) = ''"
+
+def check_default_source(found: Findings) -> None:
+    configured = config.get("DEFAULT_SOURCE", "direct") or "direct"
+    normalised = attribution.normalize_source(configured)
+    if normalised != configured:
+        found.add(
+            FAIL,
+            f"DEFAULT_SOURCE is {configured!r} but normalises to {normalised!r}; "
+            "fallback rows will not match the configured name",
+        )
+    else:
+        found.add(OK, f"DEFAULT_SOURCE ({configured!r}) is a valid source code")
 
 
-def check_empty_sources(conn: sqlite3.Connection, limit: int) -> None:
+def check_empty_sources(found: Findings, conn: sqlite3.Connection, limit: int) -> None:
     """The leak this whole script exists for.
 
     `subscribers.source` is NOT NULL with a default, so today a NULL can only
@@ -72,50 +104,50 @@ def check_empty_sources(conn: sqlite3.Connection, limit: int) -> None:
     repairable after the fact, because there is nothing recorded to repair from.
     """
     rows = conn.execute(
-        f"SELECT chat_id, source FROM subscribers WHERE {EMPTY} ORDER BY joined_at"
+        f"SELECT chat_id FROM subscribers WHERE {EMPTY} ORDER BY joined_at"
     ).fetchall()
     if rows:
-        report(
+        found.add(
             FAIL,
             f"{len(rows)} subscriber(s) with an empty source — chat_id "
             f"{listing([r['chat_id'] for r in rows], limit)}",
         )
     else:
-        report(OK, "every subscriber has a non-empty source")
+        found.add(OK, "every subscriber has a non-empty source")
 
     orphaned = conn.execute(
         f"SELECT COUNT(*) AS c FROM attribution_events WHERE {EMPTY}"
     ).fetchone()["c"]
     if orphaned:
-        report(FAIL, f"{orphaned} attribution event(s) with an empty source")
+        found.add(FAIL, f"{orphaned} attribution event(s) with an empty source")
     else:
-        report(OK, "every attribution event has a non-empty source")
+        found.add(OK, "every attribution event has a non-empty source")
 
 
-def check_normalised(conn: sqlite3.Connection, limit: int) -> None:
+def check_normalised(found: Findings, conn: sqlite3.Connection, limit: int) -> None:
     """A source that does not round-trip got written past normalize_source.
 
     It splits the funnel silently: 'Reddit' and 'reddit' are two rows in the
     report and neither is the real number.
     """
-    bad = []
-    for row in conn.execute(
-        f"SELECT DISTINCT source FROM subscribers WHERE NOT ({EMPTY})"
-    ):
-        source = row["source"]
-        if attribution.normalize_source(source) != source:
-            bad.append(f"{source!r}")
+    bad = [
+        repr(row["source"])
+        for row in conn.execute(
+            f"SELECT DISTINCT source FROM subscribers WHERE NOT ({EMPTY})"
+        )
+        if attribution.normalize_source(row["source"]) != row["source"]
+    ]
     if bad:
-        report(
+        found.add(
             FAIL,
             f"{len(bad)} source code(s) are not in normalised form, so the funnel "
-            f"will double-count them — {listing(bad, limit)}",
+            f"will double-count them — {listing(sorted(bad), limit)}",
         )
     else:
-        report(OK, "every source code is in normalised form")
+        found.add(OK, "every source code is in normalised form")
 
 
-def check_event_trail(conn: sqlite3.Connection, limit: int) -> None:
+def check_event_trail(found: Findings, conn: sqlite3.Connection, limit: int) -> None:
     """Every subscriber should have the /start event that created them."""
     rows = conn.execute(
         "SELECT s.chat_id FROM subscribers s WHERE NOT EXISTS ("
@@ -124,13 +156,13 @@ def check_event_trail(conn: sqlite3.Connection, limit: int) -> None:
         ") ORDER BY s.joined_at"
     ).fetchall()
     if rows:
-        report(
+        found.add(
             WARN,
             f"{len(rows)} subscriber(s) have no 'start' event — chat_id "
             f"{listing([r['chat_id'] for r in rows], limit)}",
         )
     else:
-        report(OK, "every subscriber has a matching 'start' event")
+        found.add(OK, "every subscriber has a matching 'start' event")
 
     mismatched = conn.execute(
         "SELECT COUNT(*) AS c FROM subscribers s"
@@ -141,20 +173,22 @@ def check_event_trail(conn: sqlite3.Connection, limit: int) -> None:
         " ) WHERE e.source <> s.source"
     ).fetchone()["c"]
     if mismatched:
-        report(
+        found.add(
             FAIL,
             f"{mismatched} subscriber(s) have a source that disagrees with their "
             "first 'start' event — the recorded origin was overwritten",
         )
     else:
-        report(OK, "each subscriber's source matches their first 'start' event")
+        found.add(OK, "each subscriber's source matches their first 'start' event")
 
 
-def check_direct_share(conn: sqlite3.Connection, max_pct: float | None) -> None:
+def check_direct_share(
+    found: Findings, conn: sqlite3.Connection, max_pct: float | None
+) -> None:
     default = attribution.default_source()
     total = conn.execute("SELECT COUNT(*) AS c FROM subscribers").fetchone()["c"]
     if not total:
-        report(WARN, "no subscribers yet — nothing to attribute")
+        found.add(WARN, "no subscribers yet — nothing to attribute")
         return
 
     untracked = conn.execute(
@@ -166,24 +200,57 @@ def check_direct_share(conn: sqlite3.Connection, max_pct: float | None) -> None:
         f"source {default!r} — they arrived without a tracked link"
     )
     if max_pct is not None and pct > max_pct:
-        report(FAIL, f"{message}; ceiling is {max_pct:.0f}%")
+        found.add(FAIL, f"{message}; ceiling is {max_pct:.0f}%")
     elif untracked:
-        report(WARN, message)
+        found.add(WARN, message)
     else:
-        report(OK, f"no subscriber fell back to {default!r}")
+        found.add(OK, f"no subscriber fell back to {default!r}")
 
 
-def check_default_source() -> None:
-    configured = config.get("DEFAULT_SOURCE", "direct") or "direct"
-    normalised = attribution.normalize_source(configured)
-    if normalised != configured:
-        report(
+# --------------------------------------------------------------------------
+
+
+def audit(
+    path: Path,
+    limit: int = 20,
+    max_direct_pct: float | None = None,
+    echo: bool = True,
+) -> Findings:
+    """Run every check against `path`. Returns the tally; never raises."""
+    found = Findings(echo=echo)
+
+    if not path.exists():
+        found.add(FAIL, f"{path} does not exist — nothing to check")
+        return found
+
+    try:
+        conn = db.connect(path)
+        tables = {
+            row["name"]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+    except sqlite3.DatabaseError as exc:
+        found.add(FAIL, f"cannot read {path}: {exc}")
+        return found
+
+    absent = REQUIRED_TABLES - tables
+    if absent:
+        found.add(
             FAIL,
-            f"DEFAULT_SOURCE is {configured!r} but normalises to {normalised!r}; "
-            "fallback rows will not match the configured name",
+            f"{path} is missing table(s) {', '.join(sorted(absent))}"
+            " — the bot has never written to this file",
         )
-    else:
-        report(OK, f"DEFAULT_SOURCE ({configured!r}) is a valid source code")
+        return found
+
+    try:
+        check_default_source(found)
+        check_empty_sources(found, conn, limit)
+        check_normalised(found, conn, limit)
+        check_event_trail(found, conn, limit)
+        check_direct_share(found, conn, max_direct_pct)
+    finally:
+        conn.close()
+    return found
 
 
 def main() -> int:
@@ -203,44 +270,12 @@ def main() -> int:
     args = parser.parse_args()
 
     config.load_env()
-
     path = Path(args.db).expanduser() if args.db else config.database_path()
-    if not path.exists():
-        print(f"[{FAIL}] {path} does not exist — nothing to check")
-        print("\n1 failure(s), 0 warning(s)")
-        return 1
-
-    try:
-        conn = db.connect(path)
-        tables = {
-            row["name"]
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-        }
-    except sqlite3.DatabaseError as exc:
-        print(f"[{FAIL}] cannot read {path}: {exc}")
-        print("\n1 failure(s), 0 warning(s)")
-        return 1
-
-    absent = {"subscribers", "attribution_events"} - tables
-    if absent:
-        print(
-            f"[{FAIL}] {path} is missing table(s) {', '.join(sorted(absent))}"
-            " — the bot has never written to this file"
-        )
-        print("\n1 failure(s), 0 warning(s)")
-        return 1
 
     print(f"== attribution guard: {path} ==\n")
-    check_default_source()
-    check_empty_sources(conn, args.limit)
-    check_normalised(conn, args.limit)
-    check_event_trail(conn, args.limit)
-    check_direct_share(conn, args.max_direct_pct)
-
-    print(f"\n{_failures} failure(s), {_warnings} warning(s)")
-    if _failures:
-        return 1
-    return 1 if (args.strict and _warnings) else 0
+    found = audit(path, limit=args.limit, max_direct_pct=args.max_direct_pct)
+    print(f"\n{found.failures} failure(s), {found.warnings} warning(s)")
+    return found.exit_code(strict=args.strict)
 
 
 if __name__ == "__main__":
