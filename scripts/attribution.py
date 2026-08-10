@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Attribution tooling: mint tracked links, read the funnel back out.
 
-    python scripts/attribution.py link reddit-r-medicine
-    python scripts/attribution.py link whatsapp-batch-2024 --landing
+    python scripts/attribution.py link tg_group1
+    python scripts/attribution.py link ig_drxyz --landing
     python scripts/attribution.py report
-    python scripts/attribution.py report --since 2026-01-01 --csv
+    python scripts/attribution.py report --since 2026-08-01 --csv
 
 `link` prints a Telegram deep link (and optionally the landing-page URL that
 forwards to it). Whatever code you pass is normalised the same way the bot
-normalises the inbound payload, so the printed link is exactly what will show
-up in the report.
+normalises the inbound ?start= payload, so the printed link is exactly what
+shows up in the report.
 """
 
 from __future__ import annotations
@@ -37,27 +37,24 @@ def cmd_report(args: argparse.Namespace) -> int:
     conn = db.connect()
     db.init_schema(conn)
 
-    rows = db.attribution_summary(conn, since=args.since)
-    opens = db.attribution_opens(conn)
+    rows = db.source_funnel(conn, since=args.since)
     if not rows:
-        print("no subscribers yet")
+        print("no users yet")
         return 0
 
-    records = []
-    for row in rows:
-        signups = row["signups"] or 0
-        opened = opens.get(row["source"], 0)
-        engaged = row["engaged"] or 0
-        records.append(
-            {
-                "source": row["source"],
-                "opens": opened,
-                "signups": signups,
-                "active": row["active"] or 0,
-                "engaged": engaged,
-                "engaged_pct": round(100 * engaged / signups) if signups else 0,
-            }
-        )
+    records = [
+        {
+            "source_channel": r["source_channel"],
+            "users": r["users"],
+            "active": r["active"],
+            "served": r["served"],
+            "answered": r["answered"],
+            "answered_pct": (
+                round(100 * r["answered"] / r["users"]) if r["users"] else 0
+            ),
+        }
+        for r in rows
+    ]
 
     if args.csv:
         writer = csv.DictWriter(sys.stdout, fieldnames=list(records[0].keys()))
@@ -65,28 +62,33 @@ def cmd_report(args: argparse.Namespace) -> int:
         writer.writerows(records)
         return 0
 
-    width = max(len(r["source"]) for r in records + [{"source": "source"}])
-    print(
-        f"{'source':<{width}}  {'opens':>6} {'signups':>8} {'active':>7} "
-        f"{'engaged':>8} {'eng%':>5}"
+    labels = [r["source_channel"] for r in records] + ["channel"]
+    width = max(len(label) for label in labels)
+    header = (
+        f"{'channel':<{width}}  {'users':>6} {'active':>7} {'served':>7} "
+        f"{'answered':>9} {'ans%':>5}"
     )
-    print("-" * (width + 38))
+    print(header)
+    print("-" * len(header))
     for r in records:
         print(
-            f"{r['source']:<{width}}  {r['opens']:>6} {r['signups']:>8} "
-            f"{r['active']:>7} {r['engaged']:>8} {r['engaged_pct']:>4}%"
+            f"{r['source_channel']:<{width}}  {r['users']:>6} {r['active']:>7} "
+            f"{r['served']:>7} {r['answered']:>9} {r['answered_pct']:>4}%"
         )
 
-    totals = {k: sum(r[k] for r in records) for k in ("opens", "signups", "active", "engaged")}
-    print("-" * (width + 38))
+    columns = ("users", "active", "served", "answered")
+    totals = {k: sum(r[k] for r in records) for k in columns}
+    print("-" * len(header))
     print(
-        f"{'TOTAL':<{width}}  {totals['opens']:>6} {totals['signups']:>8} "
-        f"{totals['active']:>7} {totals['engaged']:>8}"
+        f"{'TOTAL':<{width}}  {totals['users']:>6} {totals['active']:>7} "
+        f"{totals['served']:>7} {totals['answered']:>9}"
     )
     print(
-        "\nopens   = /start presses carrying this code (includes returning users)\n"
-        "signups = distinct subscribers first seen on this code\n"
-        "engaged = subscribers who answered at least one question"
+        "\nusers    = distinct people first seen on this channel"
+        " (first touch, frozen)\n"
+        "active   = have not stopped and have not blocked the bot\n"
+        "served   = were sent at least one question\n"
+        "answered = tapped an option at least once"
     )
     return 0
 
@@ -96,14 +98,14 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     link = sub.add_parser("link", help="print a tracked link for a source code")
-    link.add_argument("source", help="campaign / channel name, e.g. reddit-r-medicine")
+    link.add_argument("source", help="channel tag, e.g. tg_group1 or ig_drxyz")
     link.add_argument(
         "--landing", action="store_true", help="also print the landing-page URL"
     )
     link.set_defaults(func=cmd_link)
 
-    report = sub.add_parser("report", help="per-source funnel")
-    report.add_argument("--since", help="ISO date, e.g. 2026-01-01")
+    report = sub.add_parser("report", help="per-channel funnel")
+    report.add_argument("--since", help="ISO date, e.g. 2026-08-01")
     report.add_argument("--csv", action="store_true", help="emit CSV instead of a table")
     report.set_defaults(func=cmd_report)
 
