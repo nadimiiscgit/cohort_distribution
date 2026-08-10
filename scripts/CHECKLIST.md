@@ -152,18 +152,23 @@ python scripts/verify_links.py reddit-r-medicine --landing --links-only
 ```
 
 - [ ] Short link redirects to the printed `https://…/?s=reddit-r-medicine`.
-- [ ] On the rendered page, the "Open in Telegram" button's href ends in
-      `?start=reddit-r-medicine` — inspect it, or long-press and copy.
+- [ ] Tap "Open in Telegram" and check the chat you land in is the right bot.
 - [ ] Repeat steps 4 and 5 with a second fresh account.
 
-The forwarding is an inline script in `landing/index.html`. Its normalisation
-is looser than `normalize_source` — it folds disallowed characters, lowercases,
-and truncates, but does not trim leading or trailing separators — so the
-button's payload can differ from what you passed in `?s=`. That is harmless:
-the bot normalises the payload again on the way in, and the two paths land on
-the same code for anything short of the 64-character limit. What actually
-matters here is that the button carries a `start` payload at all; a bare
-`https://t.me/<bot>` href means the `?s=` value never reached the script.
+**Do not verify this step by inspecting the button's href before you tap it.**
+The forwarding is an inline script in `landing/index.html`, and depending on
+the version of that page it either rewrites the href on page load or builds it
+in a click handler at tap time. In the second case the href reads as a bare
+`https://t.me/<bot>` right up until the moment it is followed, so long-pressing
+and copying the link — or reading it in devtools — shows a missing payload on a
+page that is working perfectly. Step 5's report is the ground truth here, and
+it is the only check that holds across both versions.
+
+The page's normalisation is its own, separate from `normalize_source`, and the
+two have drifted apart before. That is survivable by design: the bot normalises
+the inbound payload again, so the recorded code is correct even when the page's
+is not byte-identical. It also means a divergence here is invisible until it
+truncates something — one more reason to trust the report over the href.
 
 ---
 
