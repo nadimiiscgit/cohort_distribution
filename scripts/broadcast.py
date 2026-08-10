@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Send one message to every active subscriber.
+"""Send one ad-hoc message to every active user.
 
     python scripts/broadcast.py --text "New questions are up."      # dry run
     python scripts/broadcast.py --file notes/launch.md --send       # for real
-    python scripts/broadcast.py --text "hi" --send --only-source landing
+    python scripts/broadcast.py --text "hi" --send --only-source tg_group1
 
-Dry run is the default and `--send` is the only way past it: a broadcast is
-irreversible and goes to every human we have. DRY_RUN=true in .env vetoes
-`--send` as a second safety catch.
+Dry run is the default and `--send` is the only way past it: an ad-hoc message
+is irreversible and goes to every human we have. DRY_RUN=true in .env vetoes
+`--send` as a second safety catch, and this script is deliberately absent from
+cron.
 
-Subscribers who have blocked the bot are deactivated automatically when their
-send comes back Forbidden, so the next broadcast doesn't retry them.
+For the daily question use `scripts/daily.py`, which is cron-driven and can
+only send the scheduled question. This one exists for the rare announcement.
+
+Users who have blocked the bot are deactivated when their send comes back
+Forbidden, so the next run doesn't retry them.
 """
 
 from __future__ import annotations
@@ -35,11 +39,11 @@ async def run(text: str, send: bool, only_source: str | None) -> int:
 
     targets = [
         row
-        for row in db.active_subscribers(conn)
-        if only_source is None or row["source"] == only_source
+        for row in db.active_users(conn)
+        if only_source is None or row["source_channel"] == only_source
     ]
     if not targets:
-        print("no matching active subscribers")
+        print("no matching active users")
         return 0
 
     print(f"{len(targets)} recipient(s)")
@@ -49,21 +53,16 @@ async def run(text: str, send: bool, only_source: str | None) -> int:
         print("--- pass --send to deliver ---")
         return 0
 
-    bot = Bot(config.require("TELEGRAM_BOT_TOKEN"))
+    bot = Bot(config.bot_token())
     delay = config.get_float("BROADCAST_RATE_LIMIT", 0.05)
-    cur = conn.execute(
-        "INSERT INTO broadcasts (body, started_at) VALUES (?, ?)", (text, db.utcnow())
-    )
-    conn.commit()
-    broadcast_id = cur.lastrowid
 
     sent = failed = 0
     async with bot:
         for row in targets:
-            chat_id = row["chat_id"]
+            user_id = row["user_id"]
             try:
                 await bot.send_message(
-                    chat_id=chat_id, text=text, parse_mode=ParseMode.HTML
+                    chat_id=user_id, text=text, parse_mode=ParseMode.HTML
                 )
                 sent += 1
             except RetryAfter as exc:
@@ -71,26 +70,21 @@ async def run(text: str, send: bool, only_source: str | None) -> int:
                 await asyncio.sleep(exc.retry_after + 1)
                 try:
                     await bot.send_message(
-                        chat_id=chat_id, text=text, parse_mode=ParseMode.HTML
+                        chat_id=user_id, text=text, parse_mode=ParseMode.HTML
                     )
                     sent += 1
                 except TelegramError as retry_exc:
                     failed += 1
-                    print(f"  {chat_id}: {retry_exc}", file=sys.stderr)
+                    print(f"  {user_id}: {retry_exc}", file=sys.stderr)
             except Forbidden:
-                db.deactivate_subscriber(conn, chat_id)
+                db.deactivate_user(conn, user_id)
                 failed += 1
-                print(f"  {chat_id}: blocked the bot, deactivated", file=sys.stderr)
+                print(f"  {user_id}: blocked the bot, deactivated", file=sys.stderr)
             except TelegramError as exc:
                 failed += 1
-                print(f"  {chat_id}: {exc}", file=sys.stderr)
+                print(f"  {user_id}: {exc}", file=sys.stderr)
             await asyncio.sleep(delay)
 
-    conn.execute(
-        "UPDATE broadcasts SET sent_count = ?, fail_count = ?, finished_at = ? WHERE id = ?",
-        (sent, failed, db.utcnow(), broadcast_id),
-    )
-    conn.commit()
     print(f"sent {sent}, failed {failed}")
     return 0 if failed == 0 else 1
 
@@ -104,7 +98,7 @@ def main() -> int:
         "--send", action="store_true", help="actually deliver; omit for a dry run"
     )
     parser.add_argument(
-        "--only-source", help="limit to subscribers with this attribution source"
+        "--only-source", help="limit to users with this source_channel"
     )
     args = parser.parse_args()
 

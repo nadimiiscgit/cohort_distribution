@@ -87,24 +87,59 @@ def get_path(name: str, default: str) -> Path:
     return path if path.is_absolute() else (ROOT / path)
 
 
-def admin_chat_ids() -> set[int]:
-    raw = get("ADMIN_CHAT_IDS", "") or ""
-    ids: set[int] = set()
-    for part in raw.replace(";", ",").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            ids.add(int(part))
-        except ValueError as exc:
-            raise ConfigError(
-                f"ADMIN_CHAT_IDS must be comma-separated integers, got {part!r}"
-            ) from exc
-    return ids
-
-
 class ConfigError(RuntimeError):
     """Raised when the environment is missing or malformed."""
+
+
+# --------------------------------------------------------------------------
+# The five variables the bot itself runs on
+# --------------------------------------------------------------------------
+
+
+def bot_token() -> str:
+    return require("BOT_TOKEN")
+
+
+def admin_id() -> int | None:
+    """The single Telegram user id allowed to run /stats. None disables it."""
+    raw = get("ADMIN_ID")
+    if not raw:
+        return None
+    try:
+        return int(raw.strip())
+    except ValueError as exc:
+        raise ConfigError(f"ADMIN_ID must be a Telegram user id, got {raw!r}") from exc
+
+
+def is_admin(user_id: int | None) -> bool:
+    """False when ADMIN_ID is unset — an unconfigured admin is not everyone."""
+    admin = admin_id()
+    return admin is not None and user_id == admin
+
+
+def cta_url() -> str | None:
+    return get("CTA_URL")
+
+
+def database_path() -> Path:
+    return get_path("DB_PATH", "data/cohort.db")
+
+
+def broadcast_hour() -> int:
+    return get_int("BROADCAST_HOUR", 9)
+
+
+# --------------------------------------------------------------------------
+# Supporting configuration for the scripts around the bot
+# --------------------------------------------------------------------------
+
+
+def backup_dir() -> Path:
+    return get_path("BACKUP_DIR", "backups")
+
+
+def questions_csv() -> Path:
+    return get_path("QUESTIONS_CSV", "data/questions.csv")
 
 
 def validate() -> list[str]:
@@ -112,13 +147,13 @@ def validate() -> list[str]:
     problems: list[str] = []
     _ensure_loaded()
 
-    token = get("TELEGRAM_BOT_TOKEN")
+    token = get("BOT_TOKEN")
     if not token:
-        problems.append("TELEGRAM_BOT_TOKEN is missing")
+        problems.append("BOT_TOKEN is missing")
     elif ":" not in token or not token.split(":", 1)[0].isdigit():
-        problems.append("TELEGRAM_BOT_TOKEN does not look like a BotFather token")
+        problems.append("BOT_TOKEN does not look like a BotFather token")
     elif token.startswith("123456789:"):
-        problems.append("TELEGRAM_BOT_TOKEN is still the .env.example placeholder")
+        problems.append("BOT_TOKEN is still the .env.example placeholder")
 
     username = get("TELEGRAM_BOT_USERNAME")
     if not username:
@@ -128,10 +163,13 @@ def validate() -> list[str]:
     elif username == "your_bot_username":
         problems.append("TELEGRAM_BOT_USERNAME is still the .env.example placeholder")
 
+    url = get("CTA_URL")
+    if url and not url.startswith(("http://", "https://")):
+        problems.append(f"CTA_URL must start with http:// or https://, got {url!r}")
+
     for name, caster in (
         ("BROADCAST_RATE_LIMIT", get_float),
-        ("DAILY_QUESTION_HOUR", get_int),
-        ("DAILY_QUESTION_LIMIT", get_int),
+        ("BROADCAST_HOUR", get_int),
         ("BACKUP_RETENTION_DAYS", get_int),
     ):
         try:
@@ -139,25 +177,34 @@ def validate() -> list[str]:
         except ConfigError as exc:
             problems.append(str(exc))
 
-    hour = get_int("DAILY_QUESTION_HOUR", 9)
-    if not 0 <= hour <= 23:
-        problems.append(f"DAILY_QUESTION_HOUR must be 0-23, got {hour}")
+    try:
+        hour = broadcast_hour()
+    except ConfigError:
+        hour = None  # already reported above
+    if hour is not None and not 0 <= hour <= 23:
+        problems.append(f"BROADCAST_HOUR must be 0-23, got {hour}")
 
     try:
-        admin_chat_ids()
+        admin_id()
     except ConfigError as exc:
         problems.append(str(exc))
 
     return problems
 
 
-def database_path() -> Path:
-    return get_path("DATABASE_PATH", "data/cohort.db")
+def advisories() -> list[str]:
+    """Things that are legal but probably not what you meant.
 
-
-def backup_dir() -> Path:
-    return get_path("BACKUP_DIR", "backups")
-
-
-def questions_csv() -> Path:
-    return get_path("QUESTIONS_CSV", "data/questions.csv")
+    Separate from validate() because neither of these should stop the bot from
+    starting: a bot with no CTA still teaches, it just stops measuring the one
+    thing the experiment exists to measure.
+    """
+    notes: list[str] = []
+    if not get("CTA_URL"):
+        notes.append("CTA_URL is unset — answered questions will have no CTA button")
+    try:
+        if admin_id() is None:
+            notes.append("ADMIN_ID is unset — /stats will answer nobody")
+    except ConfigError:
+        pass  # malformed is a failure, reported by validate()
+    return notes

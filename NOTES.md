@@ -25,6 +25,18 @@ blocked, which is unrecoverable. Pull means every message was asked for.
 **Revisit when:** enough subscribers ask for a nudge, and only as opt-in with a
 stored per-user send time.
 
+> **BUILT 2026-08-10 — `scripts/daily.py`.** The product decision changed: the
+> daily question *is* the experiment, so pull-only was measuring the wrong
+> thing. The original objections were not wrong and are answered rather than
+> dismissed: the send is cron-triggered at one fixed hour (no per-user
+> timezone, no quiet hours — everyone gets it at the same UTC-anchored time),
+> `/stop` is one tap away and honoured by `is_active`, and `Forbidden` is
+> caught and the user deactivated, so blocking is absorbed rather than retried
+> into. What is still unsolved is the three-weeks-of-silence case: a user who
+> never opens a message keeps receiving them until they block. **Revisit when:**
+> block rate is measurable — the fix is to stop sending after N consecutive
+> unanswered days, not per-user scheduling.
+
 ### Postgres instead of SQLite
 One process, one writer, low thousands of rows. SQLite in WAL mode handles
 this with no daemon, no connection pool, and a backup that is one file.
@@ -113,3 +125,59 @@ some reward. It needs anti-gaming rules and something to actually give people.
 Campaign codes already tell us which *channels* work, which is the current
 question.
 **Revisit when:** growth is the bottleneck and there's a reward worth giving.
+
+### First-party CTA click logging
+`cta_clicked` exists in the `events` schema and `db.log_event` accepts it, but
+nothing in the bot writes one. The CTA is a URL button, and **Telegram sends no
+update when a URL button is tapped** — there is no callback to handle. The one
+tap goes straight to the destination, which is the right trade for a
+conversion experiment, so the click is measured at the destination instead:
+the bot stamps `uid`, `src`, and `qid` onto `CTA_URL` and the landing side
+joins them back to `users.user_id`.
+
+The alternative is a `callback_data` button that logs the click and *then*
+hands over the link — first-party click data at the cost of a second tap on
+the highest-intent action in the funnel. (`answerCallbackQuery(url=...)` only
+opens t.me links and games, so it does not rescue the web case.)
+
+**Revisit when:** the destination cannot be instrumented, or CTA_URL becomes a
+t.me link. It is a ~10-line change in `render.cta_markup` plus a callback
+handler; the event type and the index are already in place so no schema change
+is needed.
+
+### Leaderboards, streaks, and spaced repetition
+Three separate asks, one answer: they turn a distribution experiment into a
+product. Each needs its own state, its own daily recompute, and its own
+failure mode when a user drops out for a week, and none of them tell us
+anything about which channel sends people who stick. The product app is where
+retention mechanics belong.
+**Revisit when:** never, here. If the experiment says the channel works, these
+are the app's problem.
+
+### Group posting, auto-DMs, and member scraping
+Not built, and not a cost/benefit call: posting into groups the bot was not
+invited to, DMing people who never started a chat, and enumerating a group's
+members are the behaviours that get a bot permanently banned from Telegram,
+and the last one is unlawful in several of the places our users live. Every
+message this repo sends goes to someone who pressed Start.
+**Revisit when:** never.
+
+### Multiple questions a day, and subject filtering
+Both existed in the pull-based design (`DAILY_QUESTION_LIMIT=5`,
+`/question <subject>`) and were removed when the daily schedule landed. With
+one dated question per day there is no queue to draw a second from and no
+subject to filter within — `/question` now re-sends today's question, which is
+the only coherent meaning it has left. The `subject` column is still stored
+and still shown as the question's heading.
+**Revisit when:** the schedule holds more than one question per date, which is
+a `question_for_date` change and a rethink of what "the daily question" means.
+
+### Within-N-days retention instead of exactly-day-N
+`/stats` reports D1 and D7 as *exactly-day-N* return over cohorts whose day N
+has fully elapsed. Within-N-days was rejected because it double-counts: every
+D1 returner is also a D7 returner, so the two numbers stop being comparable
+and both drift upward as the window grows. Exactly-day-N is noisier on small
+cohorts — hence the `n/a` until a cohort is old enough — but it answers "did
+they come back on day 7" rather than "have they ever come back".
+**Revisit when:** cohorts are large enough that a rolling window is readable,
+and then add it alongside rather than replacing.
