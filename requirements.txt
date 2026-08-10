@@ -1,0 +1,4 @@
+# Runtime dependencies. One line is the budget — see README "Dependencies"
+# before adding a second. Everything else comes from the standard library
+# (sqlite3, csv, argparse, logging, urllib, shutil).
+python-telegram-bot==21.6
