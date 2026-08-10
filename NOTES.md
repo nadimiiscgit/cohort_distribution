@@ -126,6 +126,19 @@ Campaign codes already tell us which *channels* work, which is the current
 question.
 **Revisit when:** growth is the bottleneck and there's a reward worth giving.
 
+### Automated end-to-end click test
+`scripts/CHECKLIST.md` is a manual walkthrough on purpose. Automating it means
+driving a real Telegram *user* account, which is a second API (MTProto), a
+second set of credentials, a phone number per test run, and a client library —
+against a rule that says one runtime dependency. It would also test the wrong
+half: the parsing is already covered by `tests/`, and the failures that
+actually happen live in the redirect chain and the shortener, outside anything
+we could drive. `verify_links.py` automates the two ends — printing the exact
+link, reading back what landed — and leaves the click, which is the part a
+human has to do anyway to prove the real path works.
+**Revisit when:** we're minting enough links that clicking them by hand stops
+happening, and even then automate the redirect chain (`curl -I` following
+hops) rather than the Telegram side.
 ### First-party CTA click logging
 `cta_clicked` exists in the `events` schema and `db.log_event` accepts it, but
 nothing in the bot writes one. The CTA is a URL button, and **Telegram sends no

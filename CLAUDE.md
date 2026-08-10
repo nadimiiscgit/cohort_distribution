@@ -74,6 +74,10 @@ Run `python3 -m unittest discover -s tests` — no install needed, ~0.2s.
   question bank is worse than none.
 - **Pruning only deletes files it named.** `backup.prune` skips anything not
   matching its own timestamp format.
+- **An unattributable subscriber blocks a launch.** `attribution_guard.py`
+  exits non-zero on a source that is empty, unnormalised, or disagrees with
+  its own first `start` event. A missing or schema-less database fails too —
+  a pre-launch check that passes against nothing is worse than no check.
 
 If you change behaviour these describe, update the test in the same commit —
 don't delete it.
