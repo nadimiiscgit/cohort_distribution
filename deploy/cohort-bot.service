@@ -1,0 +1,52 @@
+; systemd unit for the Telegram bot.
+;
+;   sudo cp deploy/cohort-bot.service /etc/systemd/system/
+;   sudo systemctl daemon-reload
+;   sudo systemctl enable --now cohort-bot
+;   journalctl -u cohort-bot -f
+;
+; Adjust User and the /srv/cohort_distribution paths if you deploy elsewhere;
+; deploy/deploy.sh assumes these defaults.
+
+[Unit]
+Description=Cohort distribution Telegram bot
+Documentation=https://github.com/nadimiiscgit/cohort_distribution
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cohort
+Group=cohort
+WorkingDirectory=/srv/cohort_distribution
+
+; The token lives here, not in the unit file — unit files are world-readable.
+; Create it with mode 0600 owned by the service user.
+EnvironmentFile=/srv/cohort_distribution/.env
+
+ExecStart=/srv/cohort_distribution/.venv/bin/python -m bot.main
+
+Restart=always
+RestartSec=10
+; Telegram outages and network blips are routine; don't let a burst of restarts
+; trip systemd's rate limiter and leave the bot down.
+StartLimitIntervalSec=0
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cohort-bot
+
+; --- hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+; The database, WAL files, and backups are the only things it needs to write.
+ReadWritePaths=/srv/cohort_distribution/data /srv/cohort_distribution/backups
+
+[Install]
+WantedBy=multi-user.target

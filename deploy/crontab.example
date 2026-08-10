@@ -1,0 +1,33 @@
+# Cron entries for the cohort deploy.
+#
+#   sudo -u cohort crontab deploy/crontab.example
+#   sudo -u cohort crontab -l          # confirm
+#
+# The bot itself runs under systemd, not cron — these are the periodic chores
+# around it. Times are in the server's local timezone; check with `timedatectl`
+# and keep them consistent with TIMEZONE in .env.
+#
+# Cron gives you a bare PATH and no shell profile, so the venv python is
+# spelled out in full on every line.
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+MAILTO=""
+
+CD=/srv/cohort_distribution
+PY=/srv/cohort_distribution/.venv/bin/python
+
+# Nightly database snapshot at 03:15, with retention pruning built in.
+15 3 * * * cd $CD && $PY scripts/backup.py >> /var/log/cohort/backup.log 2>&1
+
+# Health check every morning at 07:00. Non-zero exit means cron emails the
+# output if MAILTO is set; otherwise read the log.
+0 7 * * * cd $CD && $PY scripts/verify.py >> /var/log/cohort/verify.log 2>&1
+
+# Weekly attribution snapshot, Mondays at 08:00, appended as CSV for trending.
+0 8 * * 1 cd $CD && $PY scripts/attribution.py report --csv >> /var/log/cohort/attribution.csv 2>&1
+
+# Broadcasts are deliberately NOT scheduled here. They go to every subscriber
+# and are irreversible, so they stay a manual, reviewed action:
+#   cd $CD && $PY scripts/broadcast.py --file message.txt          # dry run
+#   cd $CD && $PY scripts/broadcast.py --file message.txt --send
