@@ -37,7 +37,7 @@ class BackupTestCase(unittest.TestCase):
         path = self.tmp / "source.db"
         conn = db.connect(path)
         db.init_schema(conn)
-        db.upsert_subscriber(conn, 1, "u", "U", "reddit")
+        db.upsert_user(conn, 1, "u", "tg_group1")
         conn.close()
         return path
 
@@ -54,9 +54,11 @@ class TestSnapshot(BackupTestCase):
         self.assertTrue(target.exists())
 
         conn = sqlite3.connect(target)
-        row = conn.execute("SELECT source FROM subscribers WHERE chat_id = 1").fetchone()
+        row = conn.execute(
+            "SELECT source_channel FROM users WHERE user_id = 1"
+        ).fetchone()
         conn.close()
-        self.assertEqual(row[0], "reddit")
+        self.assertEqual(row[0], "tg_group1")
 
     def test_snapshot_creates_the_directory(self) -> None:
         self.assertFalse(self.backup_dir.exists())
