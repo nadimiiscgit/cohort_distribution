@@ -81,6 +81,22 @@ actually catches our failure modes (bad config, tracked secrets, broken data),
 and it runs before every deploy and nightly from cron.
 **Revisit when:** there are tests worth gating a merge on.
 
+> **2026-08-10 — condition now met, still not built.** `tests/` exists and
+> covers the invariants worth gating on. CI is a deliberate next step rather
+> than an oversight: the suite needs no install and runs in ~0.2s, so
+> `python3 -m unittest discover -s tests` before pushing is currently cheaper
+> than a workflow file. Build it when more than one person is pushing and
+> "before pushing" stops being reliable.
+
+### pytest
+The suite is standard-library `unittest`. pytest's fixtures and bare `assert`
+are genuinely nicer to write, but that is convenience, and the dependency rule
+in the README does not accept convenience. Staying stdlib also means the tests
+run on a bare clone with nothing installed, which is worth more than the
+ergonomics — a new contributor's first command works before `pip install`.
+**Revisit when:** the suite gets big enough that fixtures and parametrisation
+save real maintenance, not just typing.
+
 ### Payments / paid tier
 Out of scope for distribution infrastructure entirely. If the product monetises,
 that lives in the app.

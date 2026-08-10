@@ -18,7 +18,11 @@ scripts/      Operational scripts — seed, broadcast, verify, backup, attributi
 deploy/       systemd unit, cron entries, deploy script
 landing/      Static landing page (no build step)
 data/         Question CSVs and the SQLite database — gitignored except sample.csv
+tests/        Standard-library unittest suite, no dependencies
 ```
+
+`CLAUDE.md` is the short version for agents: the hard rules, the invariants
+the tests protect, and how to get set up.
 
 ## Running locally
 
@@ -173,6 +177,27 @@ snapshots off the box, treat them as personal data.
 
 To restore, stop the service, move the snapshot over `DATABASE_PATH`, delete
 any stale `-wal`/`-shm` siblings, and start it again.
+
+## Testing
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+No install, no plugins, no config — the suite is standard-library `unittest`
+and runs on a bare clone in about two tenths of a second. It covers the
+invariants that are easy to break by accident: first-touch attribution never
+being overwritten, a subscriber never seeing the same question twice, an
+answer being recorded once, a malformed CSV loading nothing at all, and
+pruning only ever deleting files it named itself.
+
+`unittest` over pytest is the same call as everywhere else here — pytest is
+nicer to write, but nicer is convenience, and the rule below does not accept
+convenience as a justification.
+
+This complements `scripts/verify.py` rather than replacing it: the tests check
+that the code behaves, `verify.py` checks that a given deploy is configured and
+populated correctly. Run both before pushing.
 
 ## Dependencies
 
