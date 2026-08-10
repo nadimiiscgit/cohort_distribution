@@ -48,6 +48,8 @@ def check_env() -> None:
             report(FAIL, problem)
     else:
         report(OK, "all required variables present and well-formed")
+    for note in config.advisories():
+        report(WARN, note)
 
     example = config.ROOT / ".env.example"
     if example.exists():
@@ -120,19 +122,39 @@ def check_database() -> None:
     db.init_schema(conn)
     questions = db.question_count(conn)
     if questions == 0:
-        report(WARN, "no questions loaded — run scripts/seed_questions.py")
+        report(WARN, "no questions loaded — run scripts/seed.py")
     else:
         report(OK, f"{questions} question(s) loaded")
 
-    subscribers = len(db.active_subscribers(conn))
-    report(OK, f"{subscribers} active subscriber(s)")
+    report(OK, f"{len(db.active_users(conn))} active user(s)")
+
+    # The single thing that silently stops the experiment: an empty schedule.
+    upcoming = conn.execute(
+        "SELECT COUNT(*) AS c FROM questions WHERE scheduled_date >= ?", (db.today(),)
+    ).fetchone()["c"]
+    if upcoming == 0:
+        report(WARN, "no questions scheduled from today onward — daily.py will idle")
+    else:
+        report(OK, f"{upcoming} question(s) scheduled from today onward")
+
+    clashes = conn.execute(
+        "SELECT scheduled_date, COUNT(*) AS c FROM questions"
+        " WHERE scheduled_date IS NOT NULL GROUP BY scheduled_date HAVING c > 1"
+    ).fetchall()
+    for row in clashes:
+        report(
+            WARN,
+            f"{row['c']} questions share scheduled_date {row['scheduled_date']}"
+            " — only the first will ever send",
+        )
 
     orphans = conn.execute(
-        "SELECT COUNT(*) AS c FROM deliveries d"
-        " WHERE NOT EXISTS (SELECT 1 FROM questions q WHERE q.id = d.question_id)"
+        "SELECT COUNT(*) AS c FROM events e WHERE e.question_id IS NOT NULL"
+        " AND NOT EXISTS (SELECT 1 FROM questions q"
+        "                 WHERE q.question_id = e.question_id)"
     ).fetchone()["c"]
     if orphans:
-        report(WARN, f"{orphans} delivery row(s) point at deleted questions")
+        report(WARN, f"{orphans} event row(s) point at deleted questions")
 
     bad_answers = conn.execute(
         "SELECT COUNT(*) AS c FROM questions WHERE correct_option NOT IN ('A','B','C','D')"
@@ -169,7 +191,7 @@ def check_telegram() -> None:
     from telegram.error import TelegramError
 
     async def call() -> None:
-        bot = Bot(config.require("TELEGRAM_BOT_TOKEN"))
+        bot = Bot(config.bot_token())
         async with bot:
             me = await bot.get_me()
             report(OK, f"authenticated as @{me.username}")
