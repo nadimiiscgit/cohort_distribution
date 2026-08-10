@@ -1,15 +1,15 @@
 """The pre-launch leak check.
 
-A subscriber recorded without a usable source can never be attributed later —
-there is nothing stored to work back from. These tests pin the shapes that
-count as a leak, and the exit code that stops a launch.
+A user recorded without a usable source_channel can never be attributed later
+— there is nothing stored to work back from, because `events` carries no
+source of its own. These tests pin the shapes that count as a leak, and the
+exit code that stops a launch.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import io
-import os
 import sqlite3
 import sys
 import tempfile
@@ -39,20 +39,16 @@ class GuardTestCase(unittest.TestCase):
         self.addCleanup(self.conn.close)
         db.init_schema(self.conn)
 
-        env = mock.patch.dict(os.environ, {"DEFAULT_SOURCE": "direct"})
-        env.start()
-        self.addCleanup(env.stop)
-
-    def subscriber(self, chat_id: int, source: str, with_event: bool = True) -> None:
-        """Insert directly: the point is to plant rows upsert_subscriber can't."""
+    def user(self, user_id: int, source: str, with_start: bool = True) -> None:
+        """Insert directly: the point is to plant rows ensure_user can't."""
         self.conn.execute(
-            "INSERT INTO subscribers (chat_id, username, first_name, source,"
-            " active, joined_at) VALUES (?, ?, ?, ?, 1, ?)",
-            (chat_id, f"u{chat_id}", f"U{chat_id}", source, db.utcnow()),
+            "INSERT INTO users (user_id, username, first_seen, source_channel,"
+            " last_active, is_active) VALUES (?, ?, ?, ?, ?, 1)",
+            (user_id, f"u{user_id}", db.utcnow(), source, db.utcnow()),
         )
-        if with_event:
-            db.record_attribution(self.conn, source=source, event="start", chat_id=chat_id)
         self.conn.commit()
+        if with_start:
+            db.log_event(self.conn, user_id, "start")
 
     def audit(self, **kwargs) -> guard.Findings:
         return guard.audit(self.path, echo=False, **kwargs)
@@ -60,15 +56,21 @@ class GuardTestCase(unittest.TestCase):
 
 class TestCleanDatabase(GuardTestCase):
     def test_a_fully_attributed_database_passes(self) -> None:
-        self.subscriber(1, "reddit-r-medicine")
-        self.subscriber(2, "whatsapp-batch-2024")
+        self.user(1, "tg_group1")
+        self.user(2, "insta_bio")
         found = self.audit()
         self.assertEqual(found.failures, 0)
         self.assertEqual(found.exit_code(), 0)
 
+    def test_rows_written_the_normal_way_pass(self) -> None:
+        """Whatever the bot itself writes must never trip the guard."""
+        db.upsert_user(self.conn, 1, "u1", "tg_group1")
+        db.log_event(self.conn, 1, "start")
+        self.assertEqual(self.audit().failures, 0)
+
     def test_default_source_alone_warns_but_does_not_fail(self) -> None:
         """Untracked arrivals are expected; they are not a leak by themselves."""
-        self.subscriber(1, "direct")
+        self.user(1, db.DEFAULT_SOURCE_CHANNEL)
         found = self.audit()
         self.assertEqual(found.failures, 0)
         self.assertEqual(found.warnings, 1)
@@ -76,72 +78,78 @@ class TestCleanDatabase(GuardTestCase):
 
 class TestEmptySources(GuardTestCase):
     def test_empty_string_source_is_a_failure(self) -> None:
-        self.subscriber(1, "")
+        self.user(1, "")
         self.assertTrue(self.audit().failures)
 
     def test_whitespace_only_source_is_a_failure(self) -> None:
         """It is not empty to SQLite, but it is empty to the funnel."""
-        self.subscriber(1, "   ")
-        self.assertTrue(self.audit().failures)
-
-    def test_an_event_with_an_empty_source_is_a_failure(self) -> None:
-        self.subscriber(1, "reddit")
-        self.conn.execute(
-            "INSERT INTO attribution_events (chat_id, source, event, created_at)"
-            " VALUES (2, '', 'start', ?)",
-            (db.utcnow(),),
-        )
-        self.conn.commit()
+        self.user(1, "   ")
         self.assertTrue(self.audit().failures)
 
 
 class TestNormalisation(GuardTestCase):
     def test_a_source_that_skipped_normalisation_is_a_failure(self) -> None:
         """'Reddit' and 'reddit' would be two rows in the report."""
-        self.subscriber(1, "Reddit")
+        self.user(1, "Reddit")
         self.assertTrue(self.audit().failures)
 
     def test_a_normalised_source_passes(self) -> None:
-        self.subscriber(1, "reddit")
+        self.user(1, "reddit")
         self.assertEqual(self.audit().failures, 0)
 
 
-class TestEventTrail(GuardTestCase):
-    def test_a_subscriber_with_no_start_event_warns(self) -> None:
-        self.subscriber(1, "reddit", with_event=False)
+class TestOrphanEvents(GuardTestCase):
+    def test_an_event_with_no_user_row_is_a_failure(self) -> None:
+        """No foreign key holds this, and no source survives the user's deletion."""
+        self.user(1, "tg_group1")
+        db.log_event(self.conn, 999, "start")
+        self.assertTrue(self.audit().failures)
+
+    def test_deleting_a_user_and_their_events_together_stays_clean(self) -> None:
+        """The documented cleanup order in CHECKLIST.md must not trip the guard."""
+        self.user(1, "tg_group1")
+        self.conn.execute("DELETE FROM events WHERE user_id = 1")
+        self.conn.execute("DELETE FROM users WHERE user_id = 1")
+        self.conn.commit()
+        self.assertEqual(self.audit().failures, 0)
+
+    def test_deleting_only_the_user_row_is_caught(self) -> None:
+        """Half a cleanup is the realistic way orphans get made."""
+        self.user(1, "tg_group1")
+        self.conn.execute("DELETE FROM users WHERE user_id = 1")
+        self.conn.commit()
+        self.assertTrue(self.audit().failures)
+
+
+class TestStartEvents(GuardTestCase):
+    def test_a_user_with_no_start_event_warns(self) -> None:
+        self.user(1, "reddit", with_start=False)
         found = self.audit()
         self.assertEqual(found.failures, 0)
         self.assertTrue(found.warnings)
 
-    def test_a_source_disagreeing_with_the_first_start_event_is_a_failure(self) -> None:
-        """First touch is frozen, so these two can only diverge by a bad write."""
-        self.subscriber(1, "twitter", with_event=False)
-        db.record_attribution(self.conn, source="instagram", event="start", chat_id=1)
-        self.assertTrue(self.audit().failures)
-
-    def test_a_later_start_on_a_different_code_is_not_a_failure(self) -> None:
+    def test_a_second_start_on_a_different_code_is_not_a_failure(self) -> None:
         """Clicking a second campaign link is normal and must stay quiet."""
-        self.subscriber(1, "reddit")
-        db.record_attribution(self.conn, source="twitter", event="start", chat_id=1)
+        self.user(1, "reddit")
+        db.log_event(self.conn, 1, "start")
         self.assertEqual(self.audit().failures, 0)
 
 
 class TestDirectShare(GuardTestCase):
     def test_exceeding_the_ceiling_fails(self) -> None:
-        self.subscriber(1, "direct")
-        self.subscriber(2, "direct")
-        self.subscriber(3, "reddit")
+        self.user(1, db.DEFAULT_SOURCE_CHANNEL)
+        self.user(2, db.DEFAULT_SOURCE_CHANNEL)
+        self.user(3, "reddit")
         self.assertTrue(self.audit(max_direct_pct=50).failures)
 
     def test_staying_under_the_ceiling_passes(self) -> None:
-        self.subscriber(1, "direct")
-        self.subscriber(2, "reddit")
-        self.subscriber(3, "reddit")
+        self.user(1, db.DEFAULT_SOURCE_CHANNEL)
+        self.user(2, "reddit")
+        self.user(3, "reddit")
         self.assertEqual(self.audit(max_direct_pct=50).failures, 0)
 
     def test_an_empty_database_warns_rather_than_passing_silently(self) -> None:
-        found = self.audit()
-        self.assertTrue(found.warnings)
+        self.assertTrue(self.audit().warnings)
 
 
 class TestUnusableDatabase(unittest.TestCase):
@@ -201,15 +209,15 @@ class TestCommandLine(GuardTestCase):
                 return guard.main()
 
     def test_exit_code_is_zero_on_a_clean_database(self) -> None:
-        self.subscriber(1, "reddit")
+        self.user(1, "reddit")
         self.assertEqual(self.run_main("--db", str(self.path)), 0)
 
     def test_exit_code_is_non_zero_on_a_leak(self) -> None:
-        self.subscriber(1, "")
+        self.user(1, "")
         self.assertEqual(self.run_main("--db", str(self.path)), 1)
 
     def test_strict_flag_reaches_the_exit_code(self) -> None:
-        self.subscriber(1, "reddit", with_event=False)
+        self.user(1, "reddit", with_start=False)
         self.assertEqual(self.run_main("--db", str(self.path)), 0)
         self.assertEqual(self.run_main("--db", str(self.path), "--strict"), 1)
 

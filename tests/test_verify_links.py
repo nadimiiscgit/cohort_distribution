@@ -39,16 +39,13 @@ class LinksTestCase(unittest.TestCase):
         self.addCleanup(self.conn.close)
         db.init_schema(self.conn)
 
-        env = mock.patch.dict(
-            os.environ,
-            {"DEFAULT_SOURCE": "direct", "TELEGRAM_BOT_USERNAME": "cohort_bot"},
-        )
+        env = mock.patch.dict(os.environ, {"TELEGRAM_BOT_USERNAME": "cohort_bot"})
         env.start()
         self.addCleanup(env.stop)
 
-    def join(self, chat_id: int, source: str) -> None:
-        db.record_attribution(self.conn, source=source, event="start", chat_id=chat_id)
-        db.upsert_subscriber(self.conn, chat_id, f"u{chat_id}", f"U{chat_id}", source)
+    def join(self, user_id: int, source: str) -> None:
+        db.upsert_user(self.conn, user_id, f"u{user_id}", source)
+        db.log_event(self.conn, user_id, "start")
 
     def run_main(self, *argv: str) -> tuple[int, str]:
         """Returns (exit code, stdout). Normalisation notices go to stderr and
@@ -61,29 +58,36 @@ class LinksTestCase(unittest.TestCase):
 
 
 class TestCollect(LinksTestCase):
-    def test_counts_users_and_events_per_source(self) -> None:
-        self.join(1, "reddit")
-        self.join(2, "reddit")
-        self.join(3, "twitter")
+    def test_counts_users_and_starts_per_source(self) -> None:
+        self.join(1, "tg_group1")
+        self.join(2, "tg_group1")
+        self.join(3, "insta_bio")
         stats = verify_links.collect(self.conn, since=None)
-        self.assertEqual(stats["reddit"]["users"], 2)
-        self.assertEqual(stats["reddit"]["events"], 2)
-        self.assertEqual(stats["twitter"]["users"], 1)
+        self.assertEqual(stats["tg_group1"]["users"], 2)
+        self.assertEqual(stats["tg_group1"]["starts"], 2)
+        self.assertEqual(stats["insta_bio"]["users"], 1)
 
-    def test_a_returning_user_adds_an_event_but_not_a_user(self) -> None:
+    def test_a_returning_user_adds_a_start_but_not_a_user(self) -> None:
         """The difference between opens and signups, which the table shows."""
-        self.join(1, "reddit")
-        db.record_attribution(self.conn, source="reddit", event="start", chat_id=1)
+        self.join(1, "tg_group1")
+        db.log_event(self.conn, 1, "start")
         stats = verify_links.collect(self.conn, since=None)
-        self.assertEqual(stats["reddit"]["users"], 1)
-        self.assertEqual(stats["reddit"]["events"], 2)
+        self.assertEqual(stats["tg_group1"]["users"], 1)
+        self.assertEqual(stats["tg_group1"]["starts"], 2)
 
-    def test_a_source_with_events_but_no_subscriber_still_appears(self) -> None:
-        """Someone pressed the link but never subscribed — worth seeing."""
-        db.record_attribution(self.conn, source="poster", event="start", chat_id=9)
+    def test_answers_do_not_inflate_the_start_count(self) -> None:
+        """Every event lands in one table now; only 'start' means a click."""
+        self.join(1, "tg_group1")
+        db.log_event(self.conn, 1, "question_served", question_id="Q1")
+        db.log_event(self.conn, 1, "answer_submitted", question_id="Q1", is_correct=True)
+        self.assertEqual(verify_links.collect(self.conn, since=None)["tg_group1"]["starts"], 1)
+
+    def test_an_event_whose_user_is_gone_is_bucketed_not_dropped(self) -> None:
+        """An inner join would hide these, and hiding rows is the bug."""
+        db.log_event(self.conn, 999, "start")
         stats = verify_links.collect(self.conn, since=None)
-        self.assertEqual(stats["poster"]["users"], 0)
-        self.assertEqual(stats["poster"]["events"], 1)
+        self.assertEqual(stats[verify_links.ORPHAN]["starts"], 1)
+        self.assertEqual(stats[verify_links.ORPHAN]["users"], 0)
 
     def test_since_excludes_older_rows(self) -> None:
         """A fully filtered-out source drops out of the dict rather than zeroing.
@@ -91,10 +95,10 @@ class TestCollect(LinksTestCase):
         The table fills it back in for any code that was asked about, so the
         row still prints — it just does not come from here.
         """
-        self.join(1, "reddit")
-        self.assertNotIn("reddit", verify_links.collect(self.conn, since="2099-01-01"))
+        self.join(1, "tg_group1")
+        self.assertNotIn("tg_group1", verify_links.collect(self.conn, since="2099-01-01"))
         self.assertEqual(
-            verify_links.collect(self.conn, since="2000-01-01")["reddit"]["users"], 1
+            verify_links.collect(self.conn, since="2000-01-01")["tg_group1"]["users"], 1
         )
 
     def test_an_empty_database_yields_nothing(self) -> None:
@@ -111,14 +115,14 @@ class TestDisplay(unittest.TestCase):
         self.assertEqual(verify_links._display("   "), "(whitespace)")
 
     def test_a_real_code_is_left_alone(self) -> None:
-        self.assertEqual(verify_links._display("reddit-r-medicine"), "reddit-r-medicine")
+        self.assertEqual(verify_links._display("tg_group1"), "tg_group1")
 
 
 class TestLinkPhase(LinksTestCase):
     def test_prints_the_deep_link_for_each_tag(self) -> None:
-        _, out = self.run_main("reddit", "twitter", "--links-only")
-        self.assertIn("https://t.me/cohort_bot?start=reddit", out)
-        self.assertIn("https://t.me/cohort_bot?start=twitter", out)
+        _, out = self.run_main("tg_group1", "insta_bio", "--links-only")
+        self.assertIn("https://t.me/cohort_bot?start=tg_group1", out)
+        self.assertIn("https://t.me/cohort_bot?start=insta_bio", out)
 
     def test_the_printed_link_carries_the_normalised_code(self) -> None:
         """What is printed must equal what the bot will record."""
@@ -128,10 +132,10 @@ class TestLinkPhase(LinksTestCase):
 
     def test_landing_url_is_printed_only_when_asked(self) -> None:
         with mock.patch.dict(os.environ, {"LANDING_BASE_URL": "https://example.com"}):
-            _, plain = self.run_main("reddit", "--links-only")
-            _, with_landing = self.run_main("reddit", "--links-only", "--landing")
-        self.assertNotIn("?s=reddit", plain)
-        self.assertIn("https://example.com/?s=reddit", with_landing)
+            _, plain = self.run_main("tg_group1", "--links-only")
+            _, with_landing = self.run_main("tg_group1", "--links-only", "--landing")
+        self.assertNotIn("?s=tg_group1", plain)
+        self.assertIn("https://example.com/?s=tg_group1", with_landing)
 
     def test_duplicate_tags_collapse_after_normalisation(self) -> None:
         _, out = self.run_main("Reddit", "reddit", "--links-only")
@@ -140,62 +144,62 @@ class TestLinkPhase(LinksTestCase):
 
 class TestReportPhase(LinksTestCase):
     def test_a_clicked_tag_shows_its_counts(self) -> None:
-        self.join(1, "reddit")
-        _, out = self.run_main("reddit", "--report-only", "--db", str(self.path))
-        self.assertRegex(out, r"reddit\s+1\s+1")
+        self.join(1, "tg_group1")
+        _, out = self.run_main("tg_group1", "--report-only", "--db", str(self.path))
+        self.assertRegex(out, r"tg_group1\s+1\s+1")
 
     def test_an_unclicked_tag_is_listed_with_zeroes(self) -> None:
-        _, out = self.run_main("reddit", "--report-only", "--db", str(self.path))
-        self.assertIn("reddit", out)
-        self.assertIn("no subscriber recorded yet for: reddit", out)
+        _, out = self.run_main("tg_group1", "--report-only", "--db", str(self.path))
+        self.assertIn("tg_group1", out)
+        self.assertIn("no user recorded yet for: tg_group1", out)
 
     def test_unrequested_sources_are_surfaced_and_marked(self) -> None:
         """This is what catches a typo'd tag or a payload-stripping redirect."""
-        self.join(1, "reddit-typo")
-        _, out = self.run_main("reddit", "--report-only", "--db", str(self.path))
-        self.assertIn("reddit-typo *", out)
+        self.join(1, "tg-group1")
+        _, out = self.run_main("tg_group1", "--report-only", "--db", str(self.path))
+        self.assertIn("tg-group1 *", out)
 
     def test_an_empty_source_is_visible_in_the_table(self) -> None:
         self.conn.execute(
-            "INSERT INTO subscribers (chat_id, source, joined_at) VALUES (1, '', ?)",
+            "INSERT INTO users (user_id, first_seen, source_channel) VALUES (1, ?, '')",
             (db.utcnow(),),
         )
         self.conn.commit()
-        _, out = self.run_main("reddit", "--report-only", "--db", str(self.path))
+        _, out = self.run_main("tg_group1", "--report-only", "--db", str(self.path))
         self.assertIn("(empty)", out)
 
 
 class TestExitCodes(LinksTestCase):
     def test_zero_when_not_asserting_anything(self) -> None:
-        code, _ = self.run_main("reddit", "--report-only", "--db", str(self.path))
+        code, _ = self.run_main("tg_group1", "--report-only", "--db", str(self.path))
         self.assertEqual(code, 0)
 
-    def test_require_all_fails_until_every_tag_has_a_subscriber(self) -> None:
-        self.join(1, "reddit")
+    def test_require_all_fails_until_every_tag_has_a_user(self) -> None:
+        self.join(1, "tg_group1")
         code, _ = self.run_main(
-            "reddit", "twitter", "--report-only", "--require-all", "--db", str(self.path)
+            "tg_group1", "insta_bio", "--report-only", "--require-all", "--db", str(self.path)
         )
         self.assertEqual(code, 1)
 
     def test_require_all_passes_once_they_all_have_one(self) -> None:
-        self.join(1, "reddit")
-        self.join(2, "twitter")
+        self.join(1, "tg_group1")
+        self.join(2, "insta_bio")
         code, _ = self.run_main(
-            "reddit", "twitter", "--report-only", "--require-all", "--db", str(self.path)
+            "tg_group1", "insta_bio", "--report-only", "--require-all", "--db", str(self.path)
         )
         self.assertEqual(code, 0)
 
     def test_a_missing_database_is_not_a_silent_pass_under_require_all(self) -> None:
         missing = Path(self._tmp.name) / "nope.db"
         code, out = self.run_main(
-            "reddit", "--report-only", "--require-all", "--db", str(missing)
+            "tg_group1", "--report-only", "--require-all", "--db", str(missing)
         )
         self.assertEqual(code, 1)
         self.assertIn("does not exist", out)
 
     def test_links_only_never_touches_the_database(self) -> None:
         missing = Path(self._tmp.name) / "nope.db"
-        code, _ = self.run_main("reddit", "--links-only", "--db", str(missing))
+        code, _ = self.run_main("tg_group1", "--links-only", "--db", str(missing))
         self.assertEqual(code, 0)
         self.assertFalse(missing.exists())
 

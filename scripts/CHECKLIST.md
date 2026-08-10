@@ -2,7 +2,7 @@
 
 A manual end-to-end test: mint a tracked link, put a real redirect in front of
 it, click it from an account the bot has never seen, and confirm the source
-code reached `subscribers.source`.
+code reached `users.source_channel`.
 
 Do this once before any campaign that spends money or goodwill on a link. The
 failure it catches — people arriving with no source, or the wrong one — cannot
@@ -11,9 +11,9 @@ from.
 
 Budget fifteen minutes. You need a second Telegram account.
 
-> Throughout, **source** is the column referred to elsewhere as
-> `source_channel`: `subscribers.source`, and the `source` column of
-> `attribution_events`.
+> `users.source_channel` is the only place a source is stored. `events` has no
+> source column of its own, so every event reaches a channel by joining back to
+> its user — and an event whose user row is gone is unattributable outright.
 
 ---
 
@@ -30,7 +30,7 @@ when the process comes back, so a bot that was down mid-test produces a
 confusing delay rather than a clean failure.
 
 Test against production if the point is to verify the production link. If you
-would rather not put a fake subscriber in the real database, do the whole
+would rather not put a fake user in the real database, do the whole
 walkthrough against a throwaway bot and a local database first — step 7 exists
 either way.
 
@@ -38,11 +38,11 @@ either way.
 
 ## 1. Mint the link
 
-Pick a tag that names the channel, not the campaign copy: `reddit-r-medicine`,
-`whatsapp-batch-2024`, `poster-lecture-hall`.
+Pick a tag that names the channel, not the campaign copy: `tg_group1`,
+`insta_bio`, `poster-lecture-hall`.
 
 ```bash
-python scripts/verify_links.py reddit-r-medicine
+python scripts/verify_links.py tg_group1
 ```
 
 - [ ] The printed `t.me` URL is the one you will shorten. Copy it exactly.
@@ -59,10 +59,10 @@ and the tag you get can differ.
 ## 2. Baseline the database
 
 ```bash
-python scripts/verify_links.py reddit-r-medicine --report-only
+python scripts/verify_links.py tg_group1 --report-only
 ```
 
-- [ ] Note the current `users` and `events` for the tag. Usually `0 0`.
+- [ ] Note the current `users` and `starts` for the tag. Usually `0 0`.
 
 Anything already there means the tag has been used before — pick a fresh one
 for the test, or you will not be able to tell your own click apart from
@@ -81,7 +81,7 @@ campaign.
 
 ```bash
 curl -sSI https://your.short/link | grep -i '^location:'
-# location: https://t.me/your_bot?start=reddit-r-medicine
+# location: https://t.me/your_bot?start=tg_group1
 ```
 
 - [ ] `start=` survives the hop, spelled exactly as in step 1. Shorteners that
@@ -99,9 +99,9 @@ landing page instead (step 6) — that path is designed for it.
 
 ## 4. Click it from a fresh account
 
-**Fresh means the bot has never seen this chat ID.** Not "I deleted the chat",
-not "I sent /stop first". `upsert_subscriber` never overwrites `source` — first
-touch wins, by design, so a subscriber's origin stays stable when they later
+**Fresh means the bot has never seen this user ID.** Not "I deleted the chat",
+not "I sent /stop first". `ensure_user` never overwrites `source_channel` — first
+touch wins, by design, so a user's origin stays stable when they later
 click a different link (`bot/db.py`). An account that has ever pressed start is
 permanently useless for this test until you delete its row.
 
@@ -118,15 +118,15 @@ permanently useless for this test until you delete its row.
 ## 5. Confirm it landed
 
 ```bash
-python scripts/verify_links.py reddit-r-medicine --report-only
+python scripts/verify_links.py tg_group1 --report-only
 ```
 
 - [ ] `users` went up by exactly one against the step-2 baseline.
-- [ ] `events` went up by exactly one.
-- [ ] `last_event` is within a minute of your click.
-- [ ] No new row appeared under `direct`, `(empty)`, or a near-miss spelling of
-      your tag. Rows marked `*` are sources in the database you did not ask
-      about — that is where a typo shows up.
+- [ ] `starts` went up by exactly one.
+- [ ] `last_start` is within a minute of your click.
+- [ ] No new row appeared under `direct`, `(empty)`, `(no user row)`, or a
+      near-miss spelling of your tag. Rows marked `*` are channels in the
+      database you did not ask about — that is where a typo shows up.
 
 Then check nothing leaked in the process:
 
@@ -136,9 +136,17 @@ python scripts/attribution_guard.py
 
 - [ ] Exit 0.
 
-If `users` did not move, work backwards: `journalctl -u cohort-bot | grep start`
-shows the `source=` the bot actually parsed. A `source=direct` there means the
-payload never arrived and the problem is in steps 3–4, not the database.
+If `users` did not move, work backwards:
+
+```bash
+journalctl -u cohort-bot | grep 'start user_id='
+# start user_id=123456789 source_channel=tg_group1 new=True payload='tg_group1'
+```
+
+That line separates the two failures. `payload=None` means the deep link never
+carried the code and the problem is in steps 3–4, not the database.
+`payload='tg_group1'` with `source_channel=` something else means the account
+was not fresh — the payload arrived and first-touch correctly refused it.
 
 ---
 
@@ -148,10 +156,10 @@ Only if the campaign points at the landing page rather than straight at
 Telegram.
 
 ```bash
-python scripts/verify_links.py reddit-r-medicine --landing --links-only
+python scripts/verify_links.py tg_group1 --landing --links-only
 ```
 
-- [ ] Short link redirects to the printed `https://…/?s=reddit-r-medicine`.
+- [ ] Short link redirects to the printed `https://…/?s=tg_group1`.
 - [ ] Tap "Open in Telegram" and check the chat you land in is the right bot.
 - [ ] Repeat steps 4 and 5 with a second fresh account.
 
@@ -172,32 +180,34 @@ truncates something — one more reason to trust the report over the href.
 
 ---
 
-## 7. Remove the test subscriber
+## 7. Remove the test user
 
 Test rows inflate signup counts and distort the engagement percentage for the
 channel you are about to spend on. Delete them.
 
-Get the chat ID from the log line in step 5, confirm it is the one you think it
+Get the user ID from the log line in step 5, confirm it is the one you think it
 is, then:
 
 ```bash
 sqlite3 data/cohort.db
 ```
 ```sql
-SELECT chat_id, username, source, joined_at FROM subscribers WHERE chat_id = 123456789;
+SELECT user_id, username, source_channel, first_seen FROM users WHERE user_id = 123456789;
 -- read that back before continuing
 
-DELETE FROM attempts           WHERE chat_id = 123456789;
-DELETE FROM deliveries         WHERE chat_id = 123456789;
-DELETE FROM attribution_events WHERE chat_id = 123456789;
-DELETE FROM subscribers        WHERE chat_id = 123456789;
+DELETE FROM events WHERE user_id = 123456789;
+DELETE FROM users  WHERE user_id = 123456789;
 ```
 
-- [ ] `SELECT` first, `DELETE` second, one specific `chat_id` in every statement.
+- [ ] `SELECT` first, `DELETE` second, one specific `user_id` in every statement.
+- [ ] **Events first, user second.** There is no foreign key to cascade for you.
+      Drop the user row while their events remain and those events lose the only
+      copy of their source — `attribution_guard.py` fails on exactly this, which
+      is how you find out you did it.
 - [ ] Re-run `python scripts/verify_links.py <tag> --report-only`; the counts
-      are back to the step-2 baseline.
+      are back to the step-2 baseline, with nothing under `(no user row)`.
 
-Deleting the subscriber row also makes that account fresh again, which is how
+Deleting the user row also makes that account fresh again, which is how
 you re-test without burning a new phone number.
 
 ---
@@ -207,7 +217,7 @@ you re-test without burning a new phone number.
 Immediately before the links go out:
 
 ```bash
-python scripts/verify_links.py reddit-r-medicine whatsapp-batch-2024 poster-lecture-hall
+python scripts/verify_links.py tg_group1 insta_bio poster-lecture-hall
 python scripts/attribution_guard.py --max-direct-pct 40
 ```
 
@@ -217,7 +227,7 @@ python scripts/attribution_guard.py --max-direct-pct 40
 
 `attribution_guard.py` exits non-zero on any leak, so it can gate a deploy or
 run from cron next to `verify.py`. `--max-direct-pct` additionally fails when
-too large a share of subscribers arrived with no tracked link at all — the
+too large a share of users arrived with no tracked link at all — the
 symptom of an untagged link in circulation.
 
 ---
