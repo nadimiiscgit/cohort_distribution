@@ -133,9 +133,9 @@ second set of credentials, a phone number per test run, and a client library —
 against a rule that says one runtime dependency. It would also test the wrong
 half: the parsing is already covered by `tests/`, and the failures that
 actually happen live in the redirect chain and the shortener, outside anything
-we could drive. `verify_links.py` automates the two ends — printing the exact
-link, reading back what landed — and leaves the click, which is the part a
-human has to do anyway to prove the real path works.
+we could drive. `attribution.py link` and `attribution.py report` automate the
+two ends — printing the exact link, reading back what landed — and leave the
+click, which is the part a human has to do anyway to prove the real path works.
 **Revisit when:** we're minting enough links that clicking them by hand stops
 happening, and even then automate the redirect chain (`curl -I` following
 hops) rather than the Telegram side.

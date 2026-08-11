@@ -42,7 +42,7 @@ Pick a tag that names the channel, not the campaign copy: `tg_group1`,
 `insta_bio`, `poster-lecture-hall`.
 
 ```bash
-python scripts/verify_links.py tg_group1
+python scripts/attribution.py link tg_group1
 ```
 
 - [ ] The printed `t.me` URL is the one you will shorten. Copy it exactly.
@@ -59,14 +59,14 @@ and the tag you get can differ.
 ## 2. Baseline the database
 
 ```bash
-python scripts/verify_links.py tg_group1 --report-only
+python scripts/attribution.py report
 ```
 
-- [ ] Note the current `users` and `starts` for the tag. Usually `0 0`.
+- [ ] Note the current `users` for the tag, or its absence from the table
+      entirely. Usually absent.
 
-Anything already there means the tag has been used before — pick a fresh one
-for the test, or you will not be able to tell your own click apart from
-history.
+A tag already listed means it has been used before — pick a fresh one for the
+test, or you will not be able to tell your own click apart from history.
 
 ---
 
@@ -118,15 +118,13 @@ permanently useless for this test until you delete its row.
 ## 5. Confirm it landed
 
 ```bash
-python scripts/verify_links.py tg_group1 --report-only
+python scripts/attribution.py report
 ```
 
-- [ ] `users` went up by exactly one against the step-2 baseline.
-- [ ] `starts` went up by exactly one.
-- [ ] `last_start` is within a minute of your click.
-- [ ] No new row appeared under `direct`, `(empty)`, `(no user row)`, or a
-      near-miss spelling of your tag. Rows marked `*` are channels in the
-      database you did not ask about — that is where a typo shows up.
+- [ ] `users` for your tag went up by exactly one against the step-2 baseline.
+- [ ] `served` went up too, if the bot sent a question on `/start`.
+- [ ] No new row appeared under `direct` or a near-miss spelling of your tag.
+      An unexpected channel in this table is where a typo shows up.
 
 Then check nothing leaked in the process:
 
@@ -156,7 +154,7 @@ Only if the campaign points at the landing page rather than straight at
 Telegram.
 
 ```bash
-python scripts/verify_links.py tg_group1 --landing --links-only
+python scripts/attribution.py link tg_group1 --landing
 ```
 
 - [ ] Short link redirects to the printed `https://…/?s=tg_group1`.
@@ -204,8 +202,10 @@ DELETE FROM users  WHERE user_id = 123456789;
       Drop the user row while their events remain and those events lose the only
       copy of their source — `attribution_guard.py` fails on exactly this, which
       is how you find out you did it.
-- [ ] Re-run `python scripts/verify_links.py <tag> --report-only`; the counts
-      are back to the step-2 baseline, with nothing under `(no user row)`.
+- [ ] Re-run `python scripts/attribution.py report`; the counts are back to
+      the step-2 baseline.
+- [ ] Re-run `python scripts/attribution_guard.py`; it exits 0, which is what
+      proves no events were orphaned by the cleanup.
 
 Deleting the user row also makes that account fresh again, which is how
 you re-test without burning a new phone number.
@@ -217,12 +217,14 @@ you re-test without burning a new phone number.
 Immediately before the links go out:
 
 ```bash
-python scripts/verify_links.py tg_group1 insta_bio poster-lecture-hall
+python scripts/attribution.py link tg_group1
+python scripts/attribution.py link insta_bio
+python scripts/attribution.py link poster-lecture-hall
 python scripts/attribution_guard.py --max-direct-pct 40
 ```
 
-- [ ] Every tag in the campaign appears in the links block, spelled the way it
-      is spelled in the scheduled posts.
+- [ ] Every tag in the campaign prints without a `# normalised ...` notice, and
+      is spelled the way it is spelled in the scheduled posts.
 - [ ] The guard exits 0.
 
 `attribution_guard.py` exits non-zero on any leak, so it can gate a deploy or

@@ -81,7 +81,17 @@ def listing(values: list[object], limit: int) -> str:
 
 
 def check_default_source(found: Findings) -> None:
-    """The fallback has to be a valid code, or every untracked row is a leak."""
+    """The fallback has to be a valid code, or every untracked row is a leak.
+
+    It also has to be *one* code. `check_direct_share` counts against
+    `db.DEFAULT_SOURCE_CHANNEL` and the bot writes `attribution.DEFAULT_SOURCE`;
+    if those ever drift apart the share is measured against a name nothing uses.
+
+    `DEFAULT_SOURCE` in the environment is not read by anything — it was dropped
+    from `.env.example` when the constant replaced it. An operator who still has
+    it would otherwise read this check's all-clear as confirmation that
+    untracked arrivals land under their value.
+    """
     default = attribution.DEFAULT_SOURCE
     normalised = attribution.normalize_source(default)
     if normalised != default:
@@ -90,8 +100,22 @@ def check_default_source(found: Findings) -> None:
             f"attribution.DEFAULT_SOURCE is {default!r} but normalises to "
             f"{normalised!r}; fallback rows will not match the configured name",
         )
+    elif default != db.DEFAULT_SOURCE_CHANNEL:
+        found.add(
+            FAIL,
+            f"attribution.DEFAULT_SOURCE is {default!r} but the schema defaults to "
+            f"{db.DEFAULT_SOURCE_CHANNEL!r}; the two disagree",
+        )
     else:
         found.add(OK, f"DEFAULT_SOURCE ({default!r}) is a valid source code")
+
+    stale = config.get("DEFAULT_SOURCE")
+    if stale and stale != default:
+        found.add(
+            FAIL,
+            f"DEFAULT_SOURCE={stale!r} is set in the environment but nothing reads "
+            f"it — untracked arrivals are recorded as {default!r}",
+        )
 
 
 def check_empty_sources(found: Findings, conn: sqlite3.Connection, limit: int) -> None:

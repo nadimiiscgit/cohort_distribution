@@ -205,10 +205,10 @@ code {
 /* The only script on the page: one click handler on the outbound link.
 
    Attribution: a campaign link is /?s=<code>. On click we forward that code
-   into the Telegram deep link as the ?start= payload, which the bot records on
-   first contact and never overwrites. With no code the plain link is left
-   alone and the bot falls back to DEFAULT_SOURCE. Nothing is stored
-   client-side, so there is nothing to put a cookie banner in front of.
+   into the Telegram deep link as the ?start= payload, which the bot records as
+   source_channel on first contact and never overwrites. With no code the plain
+   link is left alone and the arrival is recorded as "direct". Nothing is
+   stored client-side, so there is nothing to put a cookie banner in front of.
 
    The normalisation below mirrors normalize_source() in bot/attribution.py
    step for step — same alphabet, same trimming, same 64-character cap — so a

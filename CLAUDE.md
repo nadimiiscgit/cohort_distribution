@@ -80,6 +80,11 @@ Run `python3 -m unittest discover -s tests` — no install needed, ~0.2s.
   that activity can never be joined to a channel again. A missing or
   schema-less database fails too: a pre-launch check that passes against
   nothing is worse than no check.
+- **A source cannot disagree with itself.** `events` has no source column, so
+  `users.source_channel` is the only copy. The guard used to compare the two;
+  the schema now makes divergence unrepresentable, and
+  `test_the_schema_makes_divergence_impossible` fails if a source column ever
+  reappears on `events`.
 
 If you change behaviour these describe, update the test in the same commit —
 don't delete it.
