@@ -2,7 +2,7 @@
 
 Three properties matter here, and all three are silent when broken:
 
-- Re-running the importer must not inflate the count. It runs hourly over a
+- Re-running the importer must not inflate the tally. It runs hourly over a
   log that still contains the hours it already read.
 - Link-preview fetchers must not be counted. Telegram fetches every URL that
   passes through it, so pasting a campaign link registers a hit before any
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import gzip
 import importlib.util
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -38,7 +39,7 @@ BROWSER = (
 
 
 def line(
-    target: str = "/?s=reddit",
+    target: str = "/?s=tg_group1",
     ts: str = "10/Aug/2026:13:55:36 +0000",
     status: str = "200",
     ua: str = BROWSER,
@@ -54,13 +55,13 @@ class ClassifyTestCase(unittest.TestCase):
     def classify(self, raw: str):
         return import_clicks.classify(raw)
 
-    def test_counts_a_plain_browser_hit_carrying_a_code(self) -> None:
+    def test_counts_a_plain_browser_hit_carrying_a_tag(self) -> None:
         kind, event = self.classify(line())
         self.assertEqual(kind, "click")
-        self.assertEqual(event[0], "reddit")
+        self.assertEqual(event[0], "tg_group1")
 
-    def test_normalises_the_code_the_same_way_the_bot_does(self) -> None:
-        """A code must not split into two rows depending on which side saw it."""
+    def test_normalises_the_tag_the_same_way_the_bot_does(self) -> None:
+        """A tag must not split into two rows depending on which side saw it."""
         _, event = self.classify(line(target="/?s=Reddit%20%2Fr%2FMedicine"))
         self.assertEqual(event[0], "reddit-r-medicine")
 
@@ -72,7 +73,7 @@ class ClassifyTestCase(unittest.TestCase):
         _, event = self.classify(line(ts="10/Aug/2026:13:55:36 -0400"))
         self.assertEqual(event[1], "2026-08-10T17:55:36+00:00")
 
-    def test_ignores_hits_with_no_campaign_code(self) -> None:
+    def test_ignores_hits_with_no_tag(self) -> None:
         self.assertEqual(self.classify(line(target="/"))[0], "skip")
         self.assertEqual(self.classify(line(target="/?s="))[0], "skip")
 
@@ -81,7 +82,7 @@ class ClassifyTestCase(unittest.TestCase):
         self.assertEqual(self.classify(line(status="404"))[0], "skip")
 
     def test_ignores_assets_that_inherited_the_query_string(self) -> None:
-        self.assertEqual(self.classify(line(target="/styles.css?s=reddit"))[0], "skip")
+        self.assertEqual(self.classify(line(target="/styles.css?s=x"))[0], "skip")
 
     def test_raises_on_a_line_it_cannot_parse(self) -> None:
         with self.assertRaises(import_clicks.ParseError):
@@ -129,20 +130,21 @@ class CollectTestCase(unittest.TestCase):
             path.write_text(body, encoding="utf-8")
         return str(path)
 
-    def test_groups_clicks_by_utc_date(self) -> None:
+    def test_tallies_per_day_and_per_channel(self) -> None:
         log = self.write_log(
             line(ts="10/Aug/2026:13:00:00 +0000")
             + line(ts="10/Aug/2026:14:00:00 +0000")
+            + line(ts="10/Aug/2026:15:00:00 +0000", target="/?s=ig_drxyz")
             + line(ts="11/Aug/2026:01:00:00 +0000")
         )
-        by_date, stats = import_clicks.collect([log], since=None)
-        self.assertEqual(sorted(by_date), ["2026-08-10", "2026-08-11"])
-        self.assertEqual(len(by_date["2026-08-10"]), 2)
-        self.assertEqual(stats["clicks"], 3)
+        by_day, stats = import_clicks.collect([log], since=None)
+        self.assertEqual(sorted(by_day), ["2026-08-10", "2026-08-11"])
+        self.assertEqual(dict(by_day["2026-08-10"]), {"tg_group1": 2, "ig_drxyz": 1})
+        self.assertEqual(stats["clicks"], 4)
 
     def test_a_malformed_line_does_not_abort_the_run(self) -> None:
-        log = self.write_log(line() + "garbage\n" + line(target="/?s=other"))
-        by_date, stats = import_clicks.collect([log], since=None)
+        log = self.write_log(line() + "garbage\n" + line(target="/?s=ig_drxyz"))
+        _, stats = import_clicks.collect([log], since=None)
         self.assertEqual(stats["clicks"], 2)
         self.assertEqual(stats["unparsed"], 1)
 
@@ -157,15 +159,15 @@ class CollectTestCase(unittest.TestCase):
         _, stats = import_clicks.collect([log], since=None)
         self.assertEqual(stats["clicks"], 1)
 
-    def test_since_excludes_earlier_dates(self) -> None:
+    def test_since_excludes_earlier_days(self) -> None:
         log = self.write_log(
             line(ts="01/Aug/2026:13:00:00 +0000") + line(ts="10/Aug/2026:13:00:00 +0000")
         )
-        by_date, _ = import_clicks.collect([log], since="2026-08-05")
-        self.assertEqual(sorted(by_date), ["2026-08-10"])
+        by_day, _ = import_clicks.collect([log], since="2026-08-05")
+        self.assertEqual(sorted(by_day), ["2026-08-10"])
 
 
-class ReplaceClicksTestCase(unittest.TestCase):
+class LinkClicksTestCase(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()
@@ -175,46 +177,51 @@ class ReplaceClicksTestCase(unittest.TestCase):
         db.init_schema(self.conn)
         self.addCleanup(self.conn.close)
 
-    def events(self, n: int, day: str = "2026-08-10", source: str = "reddit"):
-        return [(source, f"{day}T{h:02d}:00:00+00:00") for h in range(n)]
-
-    def test_reimporting_a_day_does_not_inflate_the_count(self) -> None:
+    def test_reimporting_a_day_does_not_inflate_the_tally(self) -> None:
         """The importer runs hourly over a log it has already partly read."""
-        db.replace_clicks_for_date(self.conn, "2026-08-10", self.events(3))
-        db.replace_clicks_for_date(self.conn, "2026-08-10", self.events(3))
-        self.assertEqual(db.clicks_on_date(self.conn, "2026-08-10"), 3)
-        self.assertEqual(db.attribution_clicks(self.conn), {"reddit": 3})
+        db.replace_clicks_for_day(self.conn, "2026-08-10", {"tg_group1": 3})
+        db.replace_clicks_for_day(self.conn, "2026-08-10", {"tg_group1": 3})
+        self.assertEqual(db.clicks_on_day(self.conn, "2026-08-10"), 3)
+        self.assertEqual(db.clicks_by_channel(self.conn), {"tg_group1": 3})
 
     def test_a_later_import_picks_up_the_rest_of_the_day(self) -> None:
-        db.replace_clicks_for_date(self.conn, "2026-08-10", self.events(3))
-        removed, added = db.replace_clicks_for_date(
-            self.conn, "2026-08-10", self.events(5)
-        )
-        self.assertEqual((removed, added), (3, 5))
-        self.assertEqual(db.clicks_on_date(self.conn, "2026-08-10"), 5)
+        db.replace_clicks_for_day(self.conn, "2026-08-10", {"tg_group1": 3})
+        db.replace_clicks_for_day(self.conn, "2026-08-10", {"tg_group1": 5})
+        self.assertEqual(db.clicks_on_day(self.conn, "2026-08-10"), 5)
 
     def test_replacing_one_day_leaves_other_days_alone(self) -> None:
-        db.replace_clicks_for_date(
-            self.conn, "2026-08-09", self.events(4, day="2026-08-09")
+        db.replace_clicks_for_day(self.conn, "2026-08-09", {"tg_group1": 4})
+        db.replace_clicks_for_day(self.conn, "2026-08-10", {"tg_group1": 2})
+        db.replace_clicks_for_day(self.conn, "2026-08-10", {"tg_group1": 1})
+        self.assertEqual(db.clicks_on_day(self.conn, "2026-08-09"), 4)
+        self.assertEqual(db.clicks_on_day(self.conn, "2026-08-10"), 1)
+        self.assertEqual(db.clicks_by_channel(self.conn), {"tg_group1": 5})
+
+    def test_a_channel_dropped_from_a_reimport_is_removed_for_that_day(self) -> None:
+        db.replace_clicks_for_day(
+            self.conn, "2026-08-10", {"tg_group1": 2, "ig_drxyz": 1}
         )
-        db.replace_clicks_for_date(self.conn, "2026-08-10", self.events(2))
-        db.replace_clicks_for_date(self.conn, "2026-08-10", self.events(1))
-        self.assertEqual(db.clicks_on_date(self.conn, "2026-08-09"), 4)
-        self.assertEqual(db.clicks_on_date(self.conn, "2026-08-10"), 1)
+        db.replace_clicks_for_day(self.conn, "2026-08-10", {"tg_group1": 2})
+        self.assertEqual(db.clicks_by_channel(self.conn), {"tg_group1": 2})
 
-    def test_rejects_rows_that_are_not_on_the_named_day(self) -> None:
-        """A mismatch would delete one day and insert into another, silently."""
-        with self.assertRaises(ValueError):
-            db.replace_clicks_for_date(
-                self.conn, "2026-08-09", self.events(2, day="2026-08-10")
-            )
+    def test_clicks_since_filters_by_day(self) -> None:
+        db.replace_clicks_for_day(self.conn, "2026-08-09", {"tg_group1": 4})
+        db.replace_clicks_for_day(self.conn, "2026-08-10", {"tg_group1": 1})
+        self.assertEqual(
+            db.clicks_by_channel(self.conn, since="2026-08-10"), {"tg_group1": 1}
+        )
 
-    def test_clicks_do_not_disturb_the_start_events_in_the_same_table(self) -> None:
-        db.record_attribution(self.conn, source="reddit", event="start", chat_id=1)
-        db.replace_clicks_for_date(self.conn, "2026-08-10", self.events(2))
-        db.replace_clicks_for_date(self.conn, "2026-08-10", self.events(2))
-        self.assertEqual(db.attribution_opens(self.conn), {"reddit": 1})
-        self.assertEqual(db.attribution_clicks(self.conn), {"reddit": 2})
+    def test_clicks_are_not_events_and_do_not_touch_the_user_funnel(self) -> None:
+        """link_clicks exists precisely because a click has no user."""
+        db.upsert_user(self.conn, 101, "u101", "tg_group1")
+        db.replace_clicks_for_day(self.conn, "2026-08-10", {"tg_group1": 9})
+        funnel = {r["source_channel"]: r["users"] for r in db.source_funnel(self.conn)}
+        self.assertEqual(funnel, {"tg_group1": 1})
+        self.assertEqual(db.clicks_by_channel(self.conn), {"tg_group1": 9})
+
+    def test_a_negative_tally_is_rejected_by_the_schema(self) -> None:
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.replace_clicks_for_day(self.conn, "2026-08-10", {"tg_group1": -1})
 
 
 if __name__ == "__main__":

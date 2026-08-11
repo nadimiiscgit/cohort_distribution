@@ -32,7 +32,14 @@ PY=/srv/cohort_distribution/.venv/bin/python
 # Runs after the hourly click import so the clicks column is current.
 0 8 * * 1 cd $CD && $PY scripts/attribution.py report --csv >> /var/log/cohort/attribution.csv 2>&1
 
-# Broadcasts are deliberately NOT scheduled here. They go to every subscriber
-# and are irreversible, so they stay a manual, reviewed action:
+# The daily question, at BROADCAST_HOUR in .env — keep these two in sync by
+# hand, cron is the authority. daily.py can only ever send the question whose
+# scheduled_date is today, and it skips users who already have it, so a retry
+# after a partial failure reaches exactly the people who were missed and a
+# double-fire reaches nobody. Nothing scheduled for today = nothing sent.
+0 9 * * * cd $CD && $PY scripts/daily.py >> /var/log/cohort/daily.log 2>&1
+
+# Ad-hoc broadcasts are deliberately NOT scheduled here. They are free text to
+# every user and cannot be recalled, so they stay a manual, reviewed action:
 #   cd $CD && $PY scripts/broadcast.py --file message.txt          # dry run
 #   cd $CD && $PY scripts/broadcast.py --file message.txt --send

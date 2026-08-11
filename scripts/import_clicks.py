@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tally landing-page clicks per campaign code from web server access logs.
+"""Tally landing-page clicks per channel from web server access logs.
 
     python scripts/import_clicks.py                            # dry run
     python scripts/import_clicks.py --write
@@ -8,19 +8,18 @@
     python scripts/import_clicks.py --write --force            # allow lower counts
 
 `scripts/attribution.py report` can tell you how many people pressed /start on
-a campaign code, but not how many saw the link and did nothing. Without that
-denominator a link with twelve clicks and eight signups looks identical to one
-with two thousand clicks and eight signups, which is the difference between a
+a channel tag, but not how many saw the link and did nothing. Without that
+denominator a link with twelve clicks and eight users looks identical to one
+with two thousand clicks and eight users, which is the difference between a
 channel worth paying for and one worth dropping.
 
-The landing page carries the code as `/?s=<code>`, so every click is already a
-line in the access log. This reads those lines and stores one `click` row per
-human hit in `attribution_events` — the same table and the same normalised
-code space the bot writes to, so no schema change and no second source of
-truth.
+The landing page carries the tag as `/?s=<code>`, so every click is already a
+line in the access log. This reads those lines and stores a per-day tally in
+`link_clicks` — no analytics script on the page, no third party, and no
+per-visitor row anywhere.
 
 Runs hourly from cron. Re-running is safe: each date present in the input
-replaces that date's stored rows rather than appending to them.
+replaces that date's tally rather than adding to it.
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ import glob
 import gzip
 import re
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -59,7 +58,7 @@ MONTHS = {
     )
 }
 
-# Static assets share the query string with the page that referenced them in
+# Static assets inherit the query string from the page that referenced them in
 # some setups, and would otherwise multiply every real click by however many
 # files the page loads.
 ASSET = re.compile(r"\.(css|js|ico|png|jpe?g|gif|svg|webp|woff2?|txt|xml|map)$", re.I)
@@ -121,8 +120,8 @@ def parse_timestamp(raw: str) -> str:
     return (stamp - timedelta(minutes=offset_minutes)).isoformat(timespec="seconds")
 
 
-def source_from_target(target: str) -> str | None:
-    """Pull the `s` campaign code out of a request target, if there is one."""
+def channel_from_target(target: str) -> str | None:
+    """Pull the `s` channel tag out of a request target, if there is one."""
     parts = urlsplit(target)
     if ASSET.search(parts.path):
         return None
@@ -130,12 +129,12 @@ def source_from_target(target: str) -> str | None:
     if not code.strip():
         return None
     # Normalised with the same function that mints the link and reads the
-    # ?start= payload, so a code cannot split across two rows in the report.
+    # ?start= payload, so one campaign cannot split across two rows.
     return attribution.normalize_source(code)
 
 
 def classify(line: str) -> tuple[str, tuple[str, str] | None]:
-    """Sort one log line into ("click", (source, ts)) / ("bot", None) / ("skip", None).
+    """Sort one log line into ("click", (channel, ts)) / ("bot", None) / ("skip", None).
 
     "bot" is reported separately from "skip" so the run can say how much of the
     traffic on a campaign link was a preview fetcher rather than a person —
@@ -146,12 +145,12 @@ def classify(line: str) -> tuple[str, tuple[str, str] | None]:
         raise ParseError("does not match the combined log format")
     if match.group("method") != "GET" or match.group("status") not in {"200", "304"}:
         return "skip", None
-    source = source_from_target(match.group("target"))
-    if source is None:
+    channel = channel_from_target(match.group("target"))
+    if channel is None:
         return "skip", None
     if is_bot(match.group("ua")):
         return "bot", None
-    return "click", (source, parse_timestamp(match.group("ts")))
+    return "click", (channel, parse_timestamp(match.group("ts")))
 
 
 def open_log(path: str):
@@ -160,9 +159,9 @@ def open_log(path: str):
     return open(path, "r", encoding="utf-8", errors="replace")
 
 
-def collect(paths: list[str], since: str | None) -> tuple[dict, dict]:
-    """Read every log file into {date: [(source, ts), ...]} plus counters."""
-    by_date: dict[str, list[tuple[str, str]]] = defaultdict(list)
+def collect(paths: list[str], since: str | None) -> tuple[dict[str, Counter], dict]:
+    """Read every log file into {day: Counter({channel: clicks})} plus counters."""
+    by_day: dict[str, Counter] = defaultdict(Counter)
     stats = {"lines": 0, "clicks": 0, "bots": 0, "unparsed": 0, "files": 0}
 
     for path in paths:
@@ -182,13 +181,13 @@ def collect(paths: list[str], since: str | None) -> tuple[dict, dict]:
                     continue
                 if event is None:
                     continue
-                source, timestamp = event
+                channel, timestamp = event
                 day = timestamp[:10]
                 if since and day < since:
                     continue
-                by_date[day].append((source, timestamp))
+                by_day[day][channel] += 1
                 stats["clicks"] += 1
-    return by_date, stats
+    return by_day, stats
 
 
 MAGIC = re.compile(r"[*?\[]")
@@ -219,19 +218,19 @@ def main() -> int:
     parser.add_argument(
         "--write",
         action="store_true",
-        help="store the results; without it this only reports what it found",
+        help="store the tallies; without it this only reports what it found",
     )
     parser.add_argument("--since", help="ignore entries before this ISO date")
     parser.add_argument(
         "--force",
         action="store_true",
-        help="write a date even when it would lower that date's stored count",
+        help="write a day even when it would lower that day's stored count",
     )
     args = parser.parse_args()
 
     config.load_env()
-    patterns = args.logs or [config.access_log_pattern()]
-    if not any(patterns):
+    patterns = [p for p in (args.logs or [config.access_log_pattern()]) if p]
+    if not patterns:
         print("no log path configured; set ACCESS_LOG_PATH or pass one", file=sys.stderr)
         return 2
 
@@ -244,49 +243,50 @@ def main() -> int:
         print(f"no log files matched {patterns}", file=sys.stderr)
         return 1
 
-    by_date, stats = collect(paths, args.since)
+    by_day, stats = collect(paths, args.since)
 
     print(
         f"read {stats['lines']} line(s) from {stats['files']} file(s): "
         f"{stats['clicks']} click(s), {stats['bots']} bot/preview hit(s) dropped, "
         f"{stats['unparsed']} unparsed line(s)"
     )
-    if not by_date:
+    if not by_day:
         print("nothing to import")
         return 0
 
     conn = db.connect()
     db.init_schema(conn)
 
-    print(f"\n{'date':<12} {'found':>7} {'stored':>7}  action")
-    print("-" * 44)
+    print(f"\n{'day':<12} {'found':>7} {'stored':>7}  action")
+    print("-" * 46)
     written = skipped = 0
-    for day in sorted(by_date):
-        events = by_date[day]
-        existing = db.clicks_on_date(conn, day)
+    for day in sorted(by_day):
+        tallies = dict(by_day[day])
+        found = sum(tallies.values())
+        existing = db.clicks_on_day(conn, day)
 
         # A log that has rotated away mid-day would otherwise replace a full
-        # day's rows with a partial re-read. Losing counts silently is worse
+        # day's tally with a partial re-read. Losing counts silently is worse
         # than refusing to write, so a decrease needs --force to go through.
-        if len(events) < existing and not args.force:
+        if found < existing and not args.force:
             print(
-                f"{day:<12} {len(events):>7} {existing:>7}  "
-                f"SKIPPED — would lose {existing - len(events)}, pass --force"
+                f"{day:<12} {found:>7} {existing:>7}  "
+                f"SKIPPED — would lose {existing - found}, pass --force"
             )
             skipped += 1
             continue
 
         if not args.write:
-            print(f"{day:<12} {len(events):>7} {existing:>7}  would replace")
+            print(f"{day:<12} {found:>7} {existing:>7}  would replace")
             continue
 
-        removed, added = db.replace_clicks_for_date(conn, day, events)
-        print(f"{day:<12} {added:>7} {removed:>7}  replaced")
+        db.replace_clicks_for_day(conn, day, tallies)
+        print(f"{day:<12} {found:>7} {existing:>7}  replaced")
         written += 1
 
-    print("-" * 44)
+    print("-" * 46)
     if args.write:
-        print(f"{written} date(s) written, {skipped} skipped")
+        print(f"{written} day(s) written, {skipped} skipped")
     else:
         print("dry run — nothing written. Re-run with --write.")
     return 0
