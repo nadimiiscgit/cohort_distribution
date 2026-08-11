@@ -347,6 +347,27 @@ This complements `scripts/verify.py` rather than replacing it: the tests check
 that the code behaves, `verify.py` checks that a given deploy is configured and
 populated correctly. Run both before pushing.
 
+### CI
+
+`.github/workflows/ci.yml` runs on every pull request and every push to
+`main`: the suite, `verify.py --secrets-only`, and a seed of `data/sample.csv`.
+
+CI installs `requirements.txt`, which a local run often skips. That matters —
+without `python-telegram-bot` the handler and render tests do not fail, they
+*skip*, and the suite prints `OK (skipped=29)`. Green, while testing 29 fewer
+things than you think. With the install, all 144 run.
+
+CI runs only the tracked-file half of `verify.py`. The full check wants a
+filled-in `.env` and a live database, neither of which belongs in CI; the
+`--secrets-only` half needs nothing and is what guards the rule that matters:
+
+```bash
+python scripts/verify.py --secrets-only    # no .env, no database, no token
+```
+
+The other half keeps running where it always did — before every deploy, and
+nightly from cron.
+
 ## Dependencies
 
 **One runtime dependency**, pinned in `requirements.txt`:

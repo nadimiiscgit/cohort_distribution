@@ -3,6 +3,7 @@
 
     python scripts/verify.py
     python scripts/verify.py --check-telegram   # also calls getMe (needs network)
+    python scripts/verify.py --secrets-only     # tracked-file check alone (CI)
 
 Exit code 0 means everything passed. Non-zero means something needs a human.
 Checks are grouped so a fresh checkout with no database still gets useful
@@ -216,7 +217,18 @@ def main() -> int:
         action="store_true",
         help="also verify the bot token against the Telegram API",
     )
+    parser.add_argument(
+        "--secrets-only",
+        action="store_true",
+        help="run only the tracked-file check — the part that needs no .env, "
+        "so CI can enforce it on every pull request",
+    )
     args = parser.parse_args()
+
+    if args.secrets_only:
+        check_secrets_not_tracked()
+        print(f"\n{_failures} failure(s), {_warnings} warning(s)")
+        return 1 if _failures else 0
 
     config.load_env()
     check_env()
