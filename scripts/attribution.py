@@ -39,22 +39,36 @@ def cmd_report(args: argparse.Namespace) -> int:
 
     rows = db.attribution_summary(conn, since=args.since)
     opens = db.attribution_opens(conn)
-    if not rows:
-        print("no subscribers yet")
+    clicks = db.attribution_clicks(conn)
+    if not rows and not clicks:
+        print("no subscribers or clicks yet")
         return 0
 
+    # A code with clicks and no signups is the most useful row in the table —
+    # it is the channel that is not working — but it has no subscribers row to
+    # be found by, so the click sources are unioned in rather than left out.
+    by_source = {row["source"]: row for row in rows}
+    sources = list(by_source) + sorted(s for s in clicks if s not in by_source)
+
     records = []
-    for row in rows:
-        signups = row["signups"] or 0
-        opened = opens.get(row["source"], 0)
-        engaged = row["engaged"] or 0
+    for source in sources:
+        row = by_source.get(source)
+        signups = (row["signups"] or 0) if row else 0
+        opened = opens.get(source, 0)
+        clicked = clicks.get(source, 0)
+        engaged = (row["engaged"] or 0) if row else 0
         records.append(
             {
-                "source": row["source"],
+                "source": source,
+                "clicks": clicked,
                 "opens": opened,
                 "signups": signups,
-                "active": row["active"] or 0,
+                "active": (row["active"] or 0) if row else 0,
                 "engaged": engaged,
+                # None rather than 0 when there are no clicks: a channel nobody
+                # has imported logs for has an unknown conversion rate, not a
+                # zero one, and printing 0% would read as "this link failed".
+                "conv_pct": round(100 * signups / clicked) if clicked else None,
                 "engaged_pct": round(100 * engaged / signups) if signups else 0,
             }
         )
@@ -67,26 +81,42 @@ def cmd_report(args: argparse.Namespace) -> int:
 
     width = max(len(r["source"]) for r in records + [{"source": "source"}])
     print(
-        f"{'source':<{width}}  {'opens':>6} {'signups':>8} {'active':>7} "
-        f"{'engaged':>8} {'eng%':>5}"
+        f"{'source':<{width}}  {'clicks':>7} {'opens':>6} {'signups':>8} "
+        f"{'active':>7} {'engaged':>8} {'conv%':>6} {'eng%':>5}"
     )
-    print("-" * (width + 38))
+    print("-" * (width + 55))
     for r in records:
+        conv = "-" if r["conv_pct"] is None else f"{r['conv_pct']}%"
         print(
-            f"{r['source']:<{width}}  {r['opens']:>6} {r['signups']:>8} "
-            f"{r['active']:>7} {r['engaged']:>8} {r['engaged_pct']:>4}%"
+            f"{r['source']:<{width}}  {r['clicks']:>7} {r['opens']:>6} "
+            f"{r['signups']:>8} {r['active']:>7} {r['engaged']:>8} "
+            f"{conv:>6} {r['engaged_pct']:>4}%"
         )
 
-    totals = {k: sum(r[k] for r in records) for k in ("opens", "signups", "active", "engaged")}
-    print("-" * (width + 38))
+    totals = {
+        k: sum(r[k] for r in records)
+        for k in ("clicks", "opens", "signups", "active", "engaged")
+    }
+    total_conv = (
+        f"{round(100 * totals['signups'] / totals['clicks'])}%"
+        if totals["clicks"]
+        else "-"
+    )
+    print("-" * (width + 55))
     print(
-        f"{'TOTAL':<{width}}  {totals['opens']:>6} {totals['signups']:>8} "
-        f"{totals['active']:>7} {totals['engaged']:>8}"
+        f"{'TOTAL':<{width}}  {totals['clicks']:>7} {totals['opens']:>6} "
+        f"{totals['signups']:>8} {totals['active']:>7} {totals['engaged']:>8} "
+        f"{total_conv:>6}"
     )
     print(
-        "\nopens   = /start presses carrying this code (includes returning users)\n"
+        "\nclicks  = landing-page hits on this code, preview fetchers excluded\n"
+        "opens   = /start presses carrying this code (includes returning users)\n"
         "signups = distinct subscribers first seen on this code\n"
-        "engaged = subscribers who answered at least one question"
+        "engaged = subscribers who answered at least one question\n"
+        "conv%   = signups per click; '-' means no clicks imported for this code\n"
+        "\nclicks and opens are lifetime totals and ignore --since; only the\n"
+        "subscriber columns are filtered by it. Clicks come from the web server\n"
+        "log via scripts/import_clicks.py — a code shows '-' until that runs."
     )
     return 0
 
