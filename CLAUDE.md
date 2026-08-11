@@ -9,7 +9,7 @@ questions, attribution tooling, and a landing page. That is the whole remit.
 
 ```
 bot/       Telegram bot — config, storage, handlers, attribution capture
-scripts/   seed, daily, broadcast, verify, backup, attribution report
+scripts/   seed, daily, broadcast, verify, backup, attribution, click import
 deploy/    systemd unit, cron entries, deploy script
 landing/   static landing page, no build step
 data/      question CSVs + SQLite db — gitignored except sample.csv
@@ -74,6 +74,15 @@ Run `python3 -m unittest discover -s tests` — no install needed, ~0.2s.
   question bank is worse than none.
 - **Pruning only deletes files it named.** `backup.prune` skips anything not
   matching its own timestamp format.
+- **Re-importing a log never inflates clicks.** `import_clicks.py` runs hourly
+  over a log it has already partly read, so `link_clicks` stores one tally per
+  (day, channel) and each run replaces the day rather than appending. Preview
+  fetchers (Telegram, WhatsApp, Slack) are excluded — they hit every link that
+  passes through them, before any human does.
+- **Clicks are not events.** A landing-page click has no user, so it lives in
+  `link_clicks`, not `events`. Do not relax `events.user_id` or widen
+  `EVENT_TYPES` to accommodate one; that trades the guarantee every `/stats`
+  number rests on for a table that already exists.
 - **An unattributable user blocks a launch.** `attribution_guard.py` exits
   non-zero on a `source_channel` that is empty or unnormalised, and on an
   event whose user row is gone — `events` stores no source of its own, so

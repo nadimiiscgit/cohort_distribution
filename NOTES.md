@@ -69,6 +69,14 @@ the supply-chain surface.
 dashboard would show, without an authenticated web surface to secure.
 **Revisit when:** someone who doesn't use a terminal needs the numbers.
 
+> **2026-08-11 — condition met, deliberately queued.** Someone does now want
+> the numbers without a terminal. Still not built, because a dashboard and a
+> URL shortener are the same decision — whether this repo runs an HTTP service
+> — and that is worth deciding once, on evidence. The click importer below
+> closes the gap the dashboard was mostly wanted for (a denominator) at a
+> fraction of the cost. Build the dashboard as part of the service, not ahead
+> of it.
+
 ### User accounts / cross-device sync
 Telegram chat ID *is* the identity. Accounts would mean passwords, resets, and
 a login form for a service whose entire value is that it has no login form.
@@ -211,3 +219,54 @@ cohorts — hence the `n/a` until a cohort is old enough — but it answers "did
 they come back on day 7" rather than "have they ever come back".
 **Revisit when:** cohorts are large enough that a rolling window is readable,
 and then add it alongside rather than replacing.
+
+### First-party URL shortener
+A `go.example.com/<code>` service that 302s to a destination and logs the hit.
+Two things genuinely argue for it: links that stay re-pointable after an
+influencer has published them, and click counts for destinations that are not
+our landing page. Neither is the reason it kept getting proposed, though —
+that was click counts, and `scripts/import_clicks.py` now gets those out of
+the web server log we already write, with no new port, no new process, and
+nothing to authenticate.
+
+The cost is not the redirect handler, which is thirty lines. It is that this
+repo currently has **no public inbound surface at all**: the bot long-polls,
+the landing page is static, and the numbers come out of SQL. A shortener is
+the first thing that has to be reachable, monitored, and kept from becoming an
+open redirect, and it would put visitor IP addresses in a table we would then
+need a retention policy for — which the daily-tally shape of `link_clicks`
+deliberately avoids.
+
+**Revisit when:** the click numbers show a channel worth re-pointing
+mid-flight, or a campaign needs to send people somewhere other than the
+landing page. Do it together with the dashboard, since both hang off the same
+service, and settle where the funnel terminates first — if "effective" means
+app signups rather than engaged users, that spans two repos and needs an
+agreed tag format and a data handover, not shared code (see hard rule 1).
+
+### Counting clicks with an analytics script — BUILT differently (2026-08-11)
+The funnel could report users per channel but not clicks, so a tag with twelve
+clicks and eight users was indistinguishable from one with two thousand clicks
+and eight users. The obvious fix is a script tag on the landing page, which
+the third-party-analytics entry above rules out.
+
+`scripts/import_clicks.py` reads the `?s=<code>` hits out of the web server's
+own access log instead, hourly from cron, into a `link_clicks` table — no new
+dependency, no external origin, and the landing page's "loads nothing from
+anywhere else" property stays literally true.
+
+Two shape decisions worth keeping. Clicks are a **daily tally, not a log**:
+one row per (day, channel), so re-importing replaces a day instead of
+appending, which is what makes an hourly cron over a partly-read log safe, and
+which means no per-visitor row — no IP, no user agent — is ever stored. And
+clicks are **not events**: `events.user_id` is `NOT NULL` and a click has no
+user, so putting them there would have meant relaxing the one constraint every
+`/stats` number depends on, to accommodate the one row type that isn't a user
+action.
+
+The part that needed care is that Telegram, WhatsApp and Slack fetch every URL
+passing through them to build a link preview. Left unfiltered, pasting a
+campaign link registers a click before a human has seen it, and the channel
+worst affected is the one we care most about measuring.
+**Revisit when:** we need on-page behaviour rather than a hit count, which the
+log cannot answer — and even then, prefer more log.
