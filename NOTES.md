@@ -100,6 +100,23 @@ and it runs before every deploy and nightly from cron.
 > than a workflow file. Build it when more than one person is pushing and
 > "before pushing" stops being reliable.
 
+> **BUILT 2026-08-11.** Several branches were being pushed in parallel and
+> "before pushing" had stopped being reliable — the stated trigger.
+> `.github/workflows/ci.yml` runs three jobs on every pull request: the
+> suite, the tracked-file check, and a seed of `data/sample.csv`.
+>
+> Two things are worth knowing. CI installs `requirements.txt` where a local
+> run often does not: without `python-telegram-bot` the handler and render
+> tests *skip*, and the suite reports `OK (skipped=29)` — green while
+> silently testing 29 fewer things. CI installs it so all 144 run.
+>
+> And CI runs `verify.py --secrets-only`, not the whole thing. The full
+> check needs a filled-in `.env`, which CI has no business holding; the
+> tracked-file check needs nothing and is the half that guards rule 2. The
+> other half stays where it was, before every deploy and nightly from cron.
+> Linting is still not part of this — that would need a second dependency,
+> and the rule does not accept convenience.
+
 ### pytest
 The suite is standard-library `unittest`. pytest's fixtures and bare `assert`
 are genuinely nicer to write, but that is convenience, and the dependency rule

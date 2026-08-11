@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push to the same branch makes the previous run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      # python-telegram-bot is installed so the handler and render tests
+      # actually run. Without it they skip, and the suite silently drops 29
+      # of its tests while still reporting OK.
+      - name: Install the one runtime dependency
+        run: pip install -r requirements.txt
+      - name: Run the suite
+        run: python -m unittest discover -s tests -v
+
+  secrets:
+    name: Secret hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      # The full verify.py needs a filled-in .env, which CI has no business
+      # holding. --secrets-only runs the tracked-file check on its own: no
+      # .env, no database, no token, and it is the check that guards the rule
+      # that actually matters (no secrets or subscriber data in the repo).
+      - name: No secrets, databases, or real question data tracked
+        run: python scripts/verify.py --secrets-only
+
+  seed:
+    name: Sample data seeds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      # seed.py validates a CSV in full before writing anything. Running it
+      # against the committed sample proves the loader and the sample have
+      # not drifted apart — the sample is what a new contributor starts from.
+      - name: Seed the sample question bank
+        run: python scripts/seed.py data/sample.csv --schedule-from "$(date -u +%F)"
+        env:
+          DB_PATH: /tmp/ci-cohort.db
