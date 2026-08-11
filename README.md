@@ -153,37 +153,37 @@ database.
 
 ### Checking a link before you spend on it
 
-Attribution is write-once. A subscriber who arrives with no source code can
-never be attributed afterwards, because nothing was recorded to work back
-from — so the time to find a broken link is before the campaign, not after.
+Attribution is write-once. A user who arrives with no source code can never be
+attributed afterwards, because nothing was recorded to work back from — so the
+time to find a broken link is before the campaign, not after.
 
 ```bash
-python scripts/verify_links.py reddit-r-medicine whatsapp-batch-2024
+python scripts/verify_links.py tg_group1 insta_bio
 # ... click each link from a fresh Telegram account, then:
-python scripts/verify_links.py reddit-r-medicine whatsapp-batch-2024 --report-only
+python scripts/verify_links.py tg_group1 insta_bio --report-only
 ```
 
-The first run prints the exact deep links to test; the second reports
-subscribers and events per source. Codes go through the same normalisation the
-bot applies to the inbound payload, so the URL printed is character-for-
-character the one that has to appear in the table. Sources found in the
-database that you did not ask about are listed too, marked `*` — that is where
-a typo'd tag or a redirect that ate the `?start=` payload shows up.
-`--require-all` exits non-zero until every listed tag has a subscriber, so a
-launch script can gate on it.
+The first run prints the exact deep links to test; the second reports users and
+`start` events per channel. Codes go through the same normalisation the bot
+applies to the inbound payload, so the URL printed is character-for-character
+the one that has to appear in the table. Channels found in the database that
+you did not ask about are listed too, marked `*` — that is where a typo'd tag
+or a redirect that ate the `?start=` payload shows up. `--require-all` exits
+non-zero until every listed tag has a user, so a launch script can gate on it.
 
 ```bash
 python scripts/attribution_guard.py
 ```
 
-Exits non-zero if any subscriber's source is empty, skipped normalisation (which
-splits one channel across two rows in the report), or disagrees with that
-subscriber's own first `start` event. A missing database is a failure rather
+Exits non-zero if any user's `source_channel` is empty or skipped normalisation
+(which splits one channel across two rows in the report), or if an event points
+at a user row that is gone — `events` holds no source of its own, so that
+activity can never be attributed again. A missing database is a failure rather
 than a pass. Run it before a launch, or from cron next to `verify.py`.
 
 `scripts/CHECKLIST.md` is the manual walkthrough behind all of this: mint a
 link, put a real shortener in front of it, click from a fresh account, confirm
-the code landed, and delete the test row afterwards.
+the code landed, and delete the test rows afterwards.
 
 ## Loading questions
 
