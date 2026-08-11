@@ -14,7 +14,8 @@ handed over as data.
 
 ```
 bot/          Telegram bot — commands, question delivery, attribution capture
-scripts/      Operational scripts — seed, broadcast, verify, backup, attribution
+scripts/      Operational scripts — seed, broadcast, verify, backup, attribution,
+              click import
 deploy/       systemd unit, cron entries, deploy script
 landing/      Static landing page (no build step)
 data/         Question CSVs and the SQLite database — gitignored except sample.csv
@@ -83,14 +84,44 @@ Read it back:
 python scripts/attribution.py report
 ```
 
-`opens` counts `/start` presses (including returning users), `signups` counts
-distinct new subscribers, and `engaged` counts those who answered at least one
-question — the last column is the one that says whether a channel sent people
-who actually wanted this.
+`clicks` counts landing-page hits, `opens` counts `/start` presses (including
+returning users), `signups` counts distinct new subscribers, and `engaged`
+counts those who answered at least one question. `conv%` — signups per click —
+is the column that separates a channel with a small, well-matched audience
+from one with a large, indifferent one.
+
+Codes that were clicked but produced no subscriber still get a row. A link with
+five hundred clicks and nothing to show for it is the most useful line in the
+table, and it has no subscriber to be found by.
+
+### Counting clicks
+
+`clicks` and `conv%` stay empty until the click importer has run. It reads the
+`?s=<code>` hits out of the web server's own access log — there is no script on
+the landing page and no third party involved:
+
+```bash
+python scripts/import_clicks.py                          # dry run
+python scripts/import_clicks.py --write                  # store
+python scripts/import_clicks.py '/var/log/nginx/access.log*' --write
+```
+
+Set `ACCESS_LOG_PATH` in `.env` and it runs hourly from cron. It replaces each
+date's rows rather than appending, so re-running is harmless and a missed hour
+catches itself up. If a rotated log would make a day's count go *down*, it
+refuses and tells you, because losing counts quietly is worse than not writing;
+`--force` overrides that.
+
+Link-preview fetchers are excluded. Telegram, WhatsApp and Slack fetch every
+URL that passes through them, so without filtering, pasting a campaign link
+into a channel registers a click before any human has seen it — and it would
+skew hardest in exactly the channel we most want to measure. The run prints how
+many hits it dropped, which is worth glancing at: an implausible ratio means
+the filter needs a new user-agent token.
 
 There is no third-party analytics anywhere in this repo, and the landing page
 loads nothing from an external origin. Attribution is a query against our own
-database.
+database and a log we already write.
 
 ## Loading questions
 
@@ -128,6 +159,9 @@ useradd --system --home /srv/cohort_distribution cohort
 git clone https://github.com/nadimiiscgit/cohort_distribution.git /srv/cohort_distribution
 chown -R cohort:cohort /srv/cohort_distribution
 mkdir -p /var/log/cohort && chown cohort:cohort /var/log/cohort
+
+# so the hourly click import can read the web server's access log
+usermod -aG adm cohort
 
 cp /srv/cohort_distribution/deploy/cohort-bot.service /etc/systemd/system/
 systemctl daemon-reload
@@ -188,8 +222,9 @@ No install, no plugins, no config — the suite is standard-library `unittest`
 and runs on a bare clone in about two tenths of a second. It covers the
 invariants that are easy to break by accident: first-touch attribution never
 being overwritten, a subscriber never seeing the same question twice, an
-answer being recorded once, a malformed CSV loading nothing at all, and
-pruning only ever deleting files it named itself.
+answer being recorded once, a malformed CSV loading nothing at all, pruning
+only ever deleting files it named itself, and re-importing a log never
+inflating a click count.
 
 `unittest` over pytest is the same call as everywhere else here — pytest is
 nicer to write, but nicer is convenience, and the rule below does not accept

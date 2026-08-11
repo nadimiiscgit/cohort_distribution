@@ -62,6 +62,11 @@ Run `python3 -m unittest discover -s tests` — no install needed, ~0.2s.
   before writing. Half a question bank is worse than none.
 - **Pruning only deletes files it named.** `backup.prune` skips anything not
   matching its own timestamp format.
+- **Re-importing a log never inflates clicks.** `import_clicks.py` runs hourly
+  over a log it has already partly read, so it replaces each date's rows via
+  `replace_clicks_for_date` instead of appending. Preview fetchers
+  (Telegram, WhatsApp, Slack) are excluded — they hit every link that passes
+  through them, before any human does.
 
 If you change behaviour these describe, update the test in the same commit —
 don't delete it.

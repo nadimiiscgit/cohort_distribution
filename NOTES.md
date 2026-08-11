@@ -57,6 +57,14 @@ the supply-chain surface.
 dashboard would show, without an authenticated web surface to secure.
 **Revisit when:** someone who doesn't use a terminal needs the numbers.
 
+> **2026-08-11 — condition met, deliberately queued.** Someone does now want
+> the numbers without a terminal. Still not built, because a dashboard and a
+> URL shortener are the same decision — whether this repo runs an HTTP service
+> — and that decision is worth making once, on evidence. The click importer
+> below closes the gap the dashboard was mostly wanted for (a denominator) at
+> a fraction of the cost. Build the dashboard as part of the service, not
+> ahead of it.
+
 ### User accounts / cross-device sync
 Telegram chat ID *is* the identity. Accounts would mean passwords, resets, and
 a login form for a service whose entire value is that it has no login form.
@@ -113,3 +121,47 @@ some reward. It needs anti-gaming rules and something to actually give people.
 Campaign codes already tell us which *channels* work, which is the current
 question.
 **Revisit when:** growth is the bottleneck and there's a reward worth giving.
+
+### First-party URL shortener
+A `go.example.com/<code>` service that 302s to a destination and logs the hit.
+Two things genuinely argue for it: links that stay re-pointable after an
+influencer has published them, and click counts for destinations that are not
+our landing page. Neither is the reason it kept getting proposed, though —
+that was click counts, and `scripts/import_clicks.py` now gets those out of
+the web server log we already write, with no new port, no new process, and
+nothing to authenticate.
+
+The cost is not the redirect handler, which is thirty lines. It is that this
+repo currently has **no public inbound surface at all**: the bot long-polls,
+the landing page is static, and the numbers come out of SQL. A shortener is
+the first thing that has to be reachable, monitored, and kept from becoming an
+open redirect, and it puts IP addresses of medical students in a table we
+would then have to have a retention policy for.
+
+**Revisit when:** the click numbers show a channel worth re-pointing mid-flight,
+or a campaign needs to send people somewhere other than the landing page. Do it
+together with the dashboard, since both hang off the same service, and settle
+where the funnel terminates first — if "effective" is supposed to mean app
+signups rather than engaged subscribers, that spans two repos and needs an
+agreed code format and a data handover, not shared code (see the scope
+boundary in the README).
+
+### Counting clicks with an analytics script — BUILT differently (2026-08-11)
+The funnel could report `/start` presses but not link clicks, so a code with
+twelve clicks and eight signups was indistinguishable from one with two
+thousand clicks and eight signups. The obvious fix is a script tag on the
+landing page, which the third-party-analytics entry above rules out.
+
+`scripts/import_clicks.py` reads the `?s=<code>` hits out of the web server's
+own access log instead, hourly from cron, into the same `attribution_events`
+table the bot writes to — no schema change, no new dependency, no external
+origin, and the landing page's "loads nothing from anywhere else" property
+stays literally true. It replaces whole days rather than appending, so
+re-running it is safe and a missed hour catches up on its own.
+
+The part that needed care is that Telegram, WhatsApp and Slack fetch every URL
+passing through them to build a link preview. Left unfiltered, pasting a
+campaign link registers a click before a human has seen it, and the channel
+worst affected is the one we care most about measuring.
+**Revisit when:** we need on-page behaviour rather than a hit count, which the
+log cannot answer — and even then, prefer more log.
