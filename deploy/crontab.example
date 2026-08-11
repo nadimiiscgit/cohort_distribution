@@ -24,7 +24,12 @@ PY=/srv/cohort_distribution/.venv/bin/python
 # output if MAILTO is set; otherwise read the log.
 0 7 * * * cd $CD && $PY scripts/verify.py >> /var/log/cohort/verify.log 2>&1
 
+# Landing-page clicks, hourly at :20. Re-reads whole days and replaces them,
+# so a missed run catches up on the next one and a double run is harmless.
+20 * * * * cd $CD && $PY scripts/import_clicks.py --write >> /var/log/cohort/clicks.log 2>&1
+
 # Weekly attribution snapshot, Mondays at 08:00, appended as CSV for trending.
+# Runs after the hourly click import so the clicks column is current.
 0 8 * * 1 cd $CD && $PY scripts/attribution.py report --csv >> /var/log/cohort/attribution.csv 2>&1
 
 # Broadcasts are deliberately NOT scheduled here. They go to every subscriber

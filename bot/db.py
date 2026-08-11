@@ -331,3 +331,58 @@ def attribution_opens(conn: sqlite3.Connection) -> dict[str, int]:
         " WHERE event = 'start' GROUP BY source"
     ).fetchall()
     return {r["source"]: r["c"] for r in rows}
+
+
+def attribution_clicks(conn: sqlite3.Connection) -> dict[str, int]:
+    """Landing-page hits per source — the denominator `opens` never had.
+
+    Populated by scripts/import_clicks.py from web server logs, not by the bot:
+    a click happens before Telegram is ever involved.
+    """
+    rows = conn.execute(
+        "SELECT source, COUNT(*) AS c FROM attribution_events"
+        " WHERE event = 'click' GROUP BY source"
+    ).fetchall()
+    return {r["source"]: r["c"] for r in rows}
+
+
+def clicks_on_date(conn: sqlite3.Connection, day: str) -> int:
+    """How many clicks are already stored for an ISO date (YYYY-MM-DD)."""
+    return conn.execute(
+        "SELECT COUNT(*) AS c FROM attribution_events"
+        " WHERE event = 'click' AND date(created_at) = ?",
+        (day,),
+    ).fetchone()["c"]
+
+
+def replace_clicks_for_date(
+    conn: sqlite3.Connection, day: str, events: Iterable[tuple[str, str]]
+) -> tuple[int, int]:
+    """Swap one day's click rows for a freshly parsed set. Returns (removed, added).
+
+    Replacing a whole day rather than appending is what makes the importer
+    idempotent without tracking a byte offset into the log: offsets do not
+    survive rotation, and a restored backup would silently skip everything the
+    offset claimed was already imported. Re-reading a day is cheap; double
+    counting it is a wrong number nobody would notice.
+    """
+    rows = list(events)
+    stray = [ts for _, ts in rows if not ts.startswith(day)]
+    if stray:
+        # Without this the delete and the insert disagree about which day is
+        # being rewritten, which deletes a day nobody asked to touch and does
+        # it quietly. Cheap to check, invisible to debug.
+        raise ValueError(
+            f"{len(stray)} click(s) are not on {day}, first is {stray[0]!r}"
+        )
+    removed = conn.execute(
+        "DELETE FROM attribution_events WHERE event = 'click' AND date(created_at) = ?",
+        (day,),
+    ).rowcount
+    conn.executemany(
+        "INSERT INTO attribution_events (chat_id, source, event, created_at)"
+        " VALUES (NULL, ?, 'click', ?)",
+        rows,
+    )
+    conn.commit()
+    return removed, len(rows)
