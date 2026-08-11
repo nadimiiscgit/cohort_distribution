@@ -158,18 +158,18 @@ attributed afterwards, because nothing was recorded to work back from — so the
 time to find a broken link is before the campaign, not after.
 
 ```bash
-python scripts/verify_links.py tg_group1 insta_bio
+python scripts/attribution.py link tg_group1
+python scripts/attribution.py link insta_bio
 # ... click each link from a fresh Telegram account, then:
-python scripts/verify_links.py tg_group1 insta_bio --report-only
+python scripts/attribution.py report
 ```
 
-The first run prints the exact deep links to test; the second reports users and
-`start` events per channel. Codes go through the same normalisation the bot
-applies to the inbound payload, so the URL printed is character-for-character
-the one that has to appear in the table. Channels found in the database that
-you did not ask about are listed too, marked `*` — that is where a typo'd tag
-or a redirect that ate the `?start=` payload shows up. `--require-all` exits
-non-zero until every listed tag has a user, so a launch script can gate on it.
+`link` prints the exact deep link to test; `report` shows what landed, per
+channel. Codes go through the same normalisation the bot applies to the inbound
+payload, so the URL printed is character-for-character the one that has to
+appear in the report. Every channel in the database is listed, so a tag that
+never shows up — or one you did not expect — is where a typo'd tag or a
+redirect that ate the `?start=` payload shows up.
 
 ```bash
 python scripts/attribution_guard.py

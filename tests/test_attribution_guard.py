@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import os
 import sqlite3
 import sys
 import tempfile
@@ -18,7 +19,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from bot import db
+from bot import attribution, db
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -38,6 +39,14 @@ class GuardTestCase(unittest.TestCase):
         self.conn = db.connect(self.path)
         self.addCleanup(self.conn.close)
         db.init_schema(self.conn)
+
+        # Snapshot and restore os.environ around each test, then clear the one
+        # variable the guard reports on: a DEFAULT_SOURCE inherited from the
+        # developer's shell would otherwise fail every test in this class.
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("DEFAULT_SOURCE", None)
 
     def user(self, user_id: int, source: str, with_start: bool = True) -> None:
         """Insert directly: the point is to plant rows ensure_user can't."""
@@ -96,6 +105,58 @@ class TestNormalisation(GuardTestCase):
     def test_a_normalised_source_passes(self) -> None:
         self.user(1, "reddit")
         self.assertEqual(self.audit().failures, 0)
+
+
+class TestDefaultSource(GuardTestCase):
+    """The fallback stopped being a setting and became a constant.
+
+    `DEFAULT_SOURCE` was dropped from .env.example and nothing reads it, but an
+    operator's existing .env still has it. Left unsaid, they would read the
+    guard's all-clear as confirmation that untracked arrivals land under it.
+    """
+
+    def test_a_stale_default_source_in_the_environment_is_a_failure(self) -> None:
+        self.user(1, "tg_group1")
+        with mock.patch.dict(os.environ, {"DEFAULT_SOURCE": "organic"}):
+            self.assertTrue(self.audit().failures)
+
+    def test_a_default_source_agreeing_with_the_constant_is_quiet(self) -> None:
+        """Harmless leftovers should not fail a launch."""
+        self.user(1, "tg_group1")
+        with mock.patch.dict(
+            os.environ, {"DEFAULT_SOURCE": attribution.DEFAULT_SOURCE}
+        ):
+            self.assertEqual(self.audit().failures, 0)
+
+    def test_the_constant_agrees_with_the_schema_and_the_share_check(self) -> None:
+        """check_direct_share counts against db, the bot writes attribution.
+
+        Two names for one fallback would measure the untracked share against a
+        label nothing actually writes.
+        """
+        self.assertEqual(attribution.DEFAULT_SOURCE, db.DEFAULT_SOURCE_CHANNEL)
+        column_default = self.conn.execute(
+            "SELECT dflt_value AS d FROM pragma_table_info('users')"
+            " WHERE name = 'source_channel'"
+        ).fetchone()["d"]
+        self.assertEqual(column_default.strip("'"), attribution.DEFAULT_SOURCE)
+
+
+class TestSchemaGuarantees(GuardTestCase):
+    def test_the_schema_makes_divergence_impossible(self) -> None:
+        """The guard used to compare a user's source against their first 'start'.
+
+        That check existed because the old schema wrote the source twice — on
+        the subscriber and on the event — and a bad write could make the two
+        disagree. `events` has no source column, so there is one copy and
+        nothing to diverge from. If a source column ever reappears here, the
+        duplicate is back and the comparison has to come back with it.
+        """
+        columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(events)")
+        }
+        self.assertNotIn("source", columns)
+        self.assertNotIn("source_channel", columns)
 
 
 class TestOrphanEvents(GuardTestCase):
