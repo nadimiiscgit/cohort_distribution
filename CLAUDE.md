@@ -9,7 +9,7 @@ questions, attribution tooling, and a landing page. That is the whole remit.
 
 ```
 bot/       Telegram bot — config, storage, handlers, attribution capture
-scripts/   seed, broadcast, verify, backup, attribution report
+scripts/   seed, daily, broadcast, verify, backup, attribution report
 deploy/    systemd unit, cron entries, deploy script
 landing/   static landing page, no build step
 data/      question CSVs + SQLite db — gitignored except sample.csv
@@ -27,7 +27,7 @@ These are not style preferences. Breaking one is a defect.
    the app repo.
 
 2. **Never commit secrets or real data.** Not `.env`, not a token, not `*.db`
-   (it holds subscriber chat IDs), not backups, not any `data/*.csv` other
+   (it holds subscriber user IDs), not backups, not any `data/*.csv` other
    than `sample.csv`. `.gitignore` covers these and `scripts/verify.py` greps
    `git ls-files` for violations — run it before you commit.
 
@@ -38,10 +38,16 @@ These are not style preferences. Breaking one is a defect.
    what it does and why the stdlib is insufficient. *Convenience is not
    sufficient.* Check `NOTES.md` first — it may already have been rejected.
 
-4. **Broadcasts stay manual.** `scripts/broadcast.py` defaults to a dry run,
-   requires `--send`, is vetoed by `DRY_RUN=true`, and is deliberately absent
-   from cron. Do not add a scheduled or automatic broadcast path. A broadcast
-   reaches every subscriber and cannot be recalled.
+4. **Free-text broadcasts stay manual.** `scripts/broadcast.py` defaults to a
+   dry run, requires `--send`, is vetoed by `DRY_RUN=true`, and is deliberately
+   absent from cron. It sends arbitrary text to every user and cannot be
+   recalled.
+
+   The one automated outbound path is `scripts/daily.py`, and it is narrow on
+   purpose: it can only send the question row whose `scheduled_date` is today,
+   it skips users already served, and an empty schedule sends nothing. Widening
+   it — free text, unscheduled questions, a second daily message — puts it back
+   under rule 4. Do not add an in-process scheduler; cron is the trigger.
 
 5. **Attribution stays first-party.** No analytics scripts, pixels, or
    external requests on the landing page. The funnel is a SQL query against
@@ -51,17 +57,34 @@ These are not style preferences. Breaking one is a defect.
 
 Run `python3 -m unittest discover -s tests` — no install needed, ~0.2s.
 
-- **First-touch attribution is frozen.** `upsert_subscriber` never overwrites
-  `source`. A subscriber who clicks a second campaign link keeps their
-  original origin; only profile fields refresh.
-- **A subscriber never sees the same question twice.** `next_question_for`
-  excludes anything in `deliveries` for that chat.
-- **An answer is recorded once.** `record_attempt` returns `False` on a repeat
-  tap and does not overwrite the first answer.
-- **A bad CSV loads nothing.** `seed_questions.py` validates the entire file
-  before writing. Half a question bank is worse than none.
+- **First-touch attribution is frozen.** `ensure_user` never overwrites
+  `source_channel`. A user who clicks a second campaign link keeps their
+  original origin; only profile fields refresh. No payload means `direct`.
+- **An answer is recorded once.** `log_event` returns `False` on a repeat tap
+  and does not overwrite the first answer — a partial unique index, not a
+  handler check.
+- **A question is served once per user.** Same mechanism. This is what makes a
+  cron retry safe: it reaches the people who were missed and nobody else.
+- **`/score` does not undo `/stop`.** `ensure_user` never touches `is_active`;
+  only `/start` resubscribes.
+- **D1/D7 are exactly-day-N over fully-elapsed cohorts.** Changing either half
+  of that silently changes what every number in `/stats` means.
+- **A bad CSV loads nothing.** `seed.py` validates the entire file before
+  writing, including two questions claiming the same `scheduled_date`. Half a
+  question bank is worse than none.
 - **Pruning only deletes files it named.** `backup.prune` skips anything not
   matching its own timestamp format.
+- **An unattributable user blocks a launch.** `attribution_guard.py` exits
+  non-zero on a `source_channel` that is empty or unnormalised, and on an
+  event whose user row is gone — `events` stores no source of its own, so
+  that activity can never be joined to a channel again. A missing or
+  schema-less database fails too: a pre-launch check that passes against
+  nothing is worse than no check.
+- **A source cannot disagree with itself.** `events` has no source column, so
+  `users.source_channel` is the only copy. The guard used to compare the two;
+  the schema now makes divergence unrepresentable, and
+  `test_the_schema_makes_divergence_impossible` fails if a source column ever
+  reappears on `events`.
 
 If you change behaviour these describe, update the test in the same commit —
 don't delete it.
@@ -72,16 +95,17 @@ don't delete it.
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env && $EDITOR .env
-python scripts/seed_questions.py data/sample.csv
+python scripts/seed.py data/sample.csv --schedule-from "$(date -u +%F)"
 python scripts/verify.py            # must exit 0
 python -m unittest discover -s tests
 ```
 
 Most work needs no bot token: seeding, validation, attribution tooling,
-backups, the landing page, and the whole test suite run without one. You only
-need a token from [@BotFather](https://t.me/BotFather) to exercise live
-Telegram traffic — and use **your own throwaway bot**, never the production
-token. Two processes polling the same token steal each other's updates.
+backups, the landing page, `daily.py --dry-run`, and the whole test suite run
+without one. You only need a token from [@BotFather](https://t.me/BotFather)
+to exercise live Telegram traffic — and use **your own throwaway bot**, never
+the production token. Two processes polling the same token steal each other's
+updates.
 
 Before pushing:
 

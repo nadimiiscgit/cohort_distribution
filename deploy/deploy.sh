@@ -53,8 +53,9 @@ chmod 600 "$APP_DIR/.env"
 "$VENV/bin/python" scripts/verify.py
 
 log "Rendering the landing page"
-# The landing page is static except for the bot username, which is substituted
-# here so the repo never hardcodes a deploy-specific value.
+# The landing page is one self-contained HTML file — CSS inline, no assets to
+# copy. Its only deploy-specific value is the bot username, substituted here so
+# the repo never hardcodes one.
 BOT_USERNAME="$(grep -E '^TELEGRAM_BOT_USERNAME=' "$APP_DIR/.env" | cut -d= -f2- | tr -d '"'"'"' ')"
 if [[ -z "$BOT_USERNAME" ]]; then
   echo "    TELEGRAM_BOT_USERNAME is empty in .env" >&2
@@ -62,7 +63,6 @@ if [[ -z "$BOT_USERNAME" ]]; then
 fi
 rm -rf "$APP_DIR/landing/dist"
 mkdir -p "$APP_DIR/landing/dist"
-cp "$APP_DIR/landing/"*.css "$APP_DIR/landing/dist/" 2>/dev/null || true
 sed "s/__BOT_USERNAME__/${BOT_USERNAME}/g" \
   "$APP_DIR/landing/index.html" > "$APP_DIR/landing/dist/index.html"
 echo "    landing/dist ready (point your web server's document root at it)"

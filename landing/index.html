@@ -6,103 +6,237 @@
 <title>One question a day</title>
 <meta name="description" content="A daily medical MCQ on Telegram, with the reasoning spelled out.">
 <meta name="color-scheme" content="light dark">
-<link rel="stylesheet" href="styles.css">
-<!--
-  The bot username in the button below is a placeholder that deploy/deploy.sh
-  substitutes from TELEGRAM_BOT_USERNAME. Open this file directly during
-  development and the button points at that placeholder — that is expected;
-  run the deploy script to render a working page into landing/dist/.
 
-  No external fonts, scripts, or analytics: the page loads two files from our
-  own origin and nothing else. Attribution is carried in the outbound link, so
-  there is nothing to track on this side and no cookie banner to write.
--->
+<script>
+/* ============================================================================
+   CONFIG — the only thing on this page that changes between deployments.
+
+   BOT_URL is the Telegram deep link the button opens. __BOT_USERNAME__ is a
+   placeholder that deploy/deploy.sh substitutes from TELEGRAM_BOT_USERNAME in
+   .env, which is why no real username is committed here. Open this file
+   directly during development and the link points at the placeholder — that is
+   expected; run the deploy script to render a working page into landing/dist/.
+
+   Editing by hand instead of deploying? Replace __BOT_USERNAME__ in both
+   BOT_URL and the button's href below (the href is the no-JavaScript
+   fallback, so it carries the same value).
+   ========================================================================= */
+var BOT_URL = "https://t.me/__BOT_USERNAME__";
+</script>
+
+<style>
+/* Mobile-first: the base rules are the phone layout. One breakpoint widens it
+   on anything larger. No web fonts, no images, no animation — the whole page
+   is a single request under 10KB, which is the point on a slow connection. */
+
+:root {
+  --bg: #fbfaf8;
+  --text: #1a1a1a;
+  --muted: #5d5d5d;
+  --border: #e4e1dc;
+  --accent: #1c6b52;
+  --accent-text: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171a;
+    --text: #eceff1;
+    --muted: #a3abb2;
+    --border: #2c3237;
+    --accent: #4bbf94;
+    --accent-text: #0d1114;
+  }
+}
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+/* Vertical rhythm is deliberately tight: the button is the only thing on this
+   page that matters, and on a 360x640 Android viewport it has to be reachable
+   without a scroll. Every margin below was measured against that constraint. */
+
+body {
+  margin: 0;
+  padding: 1.75rem 1.25rem 2.5rem;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+main {
+  max-width: 34rem;
+  margin: 0 auto;
+}
+
+/* Sized in vw rather than fixed: a size that looks right on a wide screen
+   wraps to four lines on a 360px phone and pushes the button below the fold.
+   Three lines at the small end is the trade — measured, not guessed. */
+
+h1 {
+  margin: 0 0 0.75rem;
+  font-size: clamp(1.5rem, 7vw, 2.5rem);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.lede {
+  margin: 0 0 1.5rem;
+  color: var(--muted);
+  font-size: 1.0625rem;
+}
+
+/* --- value prop --- */
+
+.value {
+  margin: 0 0 1.75rem;
+  padding: 0;
+  list-style: none;
+}
+
+.value li {
+  padding: 0.8125rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.value li:last-child { border-bottom: 1px solid var(--border); }
+
+.value strong {
+  display: block;
+  margin-bottom: 0.125rem;
+}
+
+.value span { color: var(--muted); }
+
+/* --- call to action --- */
+
+.cta {
+  display: block;
+  padding: 1rem 1.5rem;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+}
+
+.cta:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.fine {
+  margin: 0.875rem 0 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+/* --- footer --- */
+
+footer {
+  margin-top: 3rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+footer p { margin: 0 0 0.5rem; }
+footer p:last-child { margin-bottom: 0; }
+
+code {
+  padding: 0.1rem 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875em;
+}
+
+/* --- wider than a phone --- */
+
+@media (min-width: 40rem) {
+  body { padding-top: 5rem; }
+  /* Wide enough that the headline's second sentence stays on one line. */
+  main { max-width: 38rem; }
+  .cta { display: inline-block; }
+}
+</style>
 </head>
 <body>
 
 <main>
-  <header class="hero">
-    <p class="eyebrow">Free · No signup · Leave anytime</p>
-    <h1>One question a day.<br>The reasoning included.</h1>
-    <p class="lede">
-      A single exam-style question lands in your Telegram. You answer, you find
-      out why. No app to install, no account to make, no feed to scroll.
-    </p>
-    <a class="cta" id="cta" href="https://t.me/__BOT_USERNAME__">Open in Telegram</a>
-    <p class="fine">Works with the Telegram app you already have.</p>
-  </header>
+  <h1>One question a day.<br>The reasoning included.</h1>
 
-  <section class="how">
-    <h2>How it works</h2>
-    <ol>
-      <li>
-        <h3>Tap the button</h3>
-        <p>Telegram opens, you press start. That's the whole signup.</p>
-      </li>
-      <li>
-        <h3>Answer a question</h3>
-        <p>Four options, one tap. Takes under a minute.</p>
-      </li>
-      <li>
-        <h3>Read why</h3>
-        <p>The explanation arrives with the answer, not on a separate page.</p>
-      </li>
-    </ol>
-  </section>
+  <p class="lede">
+    Free, on Telegram, for medical students.
+  </p>
 
-  <section class="faq">
-    <h2>Questions you might have</h2>
+  <ul class="value">
+    <li>
+      <strong>One tap, under a minute</strong>
+      <span>Four options, in a chat you already have open.</span>
+    </li>
+    <li>
+      <strong>The explanation comes with it</strong>
+      <span>Written by a human, in the same message.</span>
+    </li>
+    <li>
+      <strong>Nothing to sign up for</strong>
+      <span>No account, no email. Free, and <code>/stop</code> ends it.</span>
+    </li>
+  </ul>
 
-    <details>
-      <summary>What does it cost?</summary>
-      <p>Nothing. There is no paid tier on this bot.</p>
-    </details>
-
-    <details>
-      <summary>What do you store about me?</summary>
-      <p>
-        Your Telegram chat ID, the link you arrived from, and which questions
-        you've answered — that's what makes it possible to not send you the same
-        question twice. Nothing is sold or shared. Send <code>/stop</code> and
-        the messages stop.
-      </p>
-    </details>
-
-    <details>
-      <summary>How many questions can I get?</summary>
-      <p>
-        Up to five a day, on demand. Send <code>/question</code> whenever you
-        want the next one.
-      </p>
-    </details>
-
-    <details>
-      <summary>Can I pick a subject?</summary>
-      <p>
-        Yes — <code>/question Pharmacology</code> pulls from that subject alone.
-      </p>
-    </details>
-  </section>
+  <!-- The href carries the same placeholder as BOT_URL so the button works
+       with JavaScript disabled; the handler below only refines it. -->
+  <a class="cta" id="cta" href="https://t.me/__BOT_USERNAME__">Open in Telegram</a>
+  <p class="fine">Opens Telegram. Press start and the first question arrives.</p>
 
   <footer>
     <p>Send <code>/stop</code> in the chat to stop receiving messages.</p>
+    <p>We store your Telegram chat ID and which questions you've seen. Nothing is sold or shared.</p>
   </footer>
 </main>
 
 <script>
-  // Attribution: a campaign link is /?s=<code>. We forward that code into the
-  // Telegram deep link as the ?start= payload, which the bot records on first
-  // contact. If there's no code, the plain link is left alone and the bot
-  // falls back to DEFAULT_SOURCE. Nothing is stored client-side.
-  (function () {
-    var code = new URLSearchParams(window.location.search).get('s');
-    if (!code) return;
-    var safe = code.replace(/[^A-Za-z0-9_-]+/g, '-').toLowerCase().slice(0, 64);
-    if (!safe) return;
-    var cta = document.getElementById('cta');
-    cta.href = cta.href.split('?')[0] + '?start=' + safe;
-  })();
+/* The only script on the page: one click handler on the outbound link.
+
+   Attribution: a campaign link is /?s=<code>. On click we forward that code
+   into the Telegram deep link as the ?start= payload, which the bot records as
+   source_channel on first contact and never overwrites. With no code the plain
+   link is left alone and the arrival is recorded as "direct". Nothing is
+   stored client-side, so there is nothing to put a cookie banner in front of.
+
+   The normalisation below mirrors normalize_source() in bot/attribution.py
+   step for step — same alphabet, same trimming, same 64-character cap — so a
+   code round-trips to itself and the link we hand Telegram is exactly the
+   string that shows up in `attribution.py report`. Change one, change both.
+
+   If the analytics placeholder below is ever filled in, defining
+   window.trackOutbound(id, href) is how it hears about this click. */
+document.getElementById('cta').addEventListener('click', function () {
+  var code = new URLSearchParams(window.location.search).get('s');
+  var safe = (code || '').trim()
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/^[-_]+|[-_]+$/g, '')
+    .toLowerCase()
+    .replace(/-{2,}/g, '-')
+    .slice(0, 64);
+  this.href = safe ? BOT_URL + '?start=' + safe : BOT_URL;
+  if (typeof window.trackOutbound === 'function') {
+    window.trackOutbound('cta', this.href);
+  }
+});
 </script>
+
+<!-- ANALYTICS SNIPPET GOES HERE — one tag, nothing else, and read the
+     "Third-party analytics on the landing page" entry in NOTES.md first.
+     Deliberately empty: the page currently loads nothing from another origin,
+     which is what keeps this a page with no cookie banner and no privacy
+     policy to write. -->
 
 </body>
 </html>

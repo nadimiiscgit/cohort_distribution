@@ -1,7 +1,7 @@
 # cohort_distribution
 
 Distribution infrastructure for the cohort: a Telegram bot that delivers
-questions, the attribution tooling that tells us where subscribers came from,
+questions, the attribution tooling that tells us where users came from,
 and the landing page that points at the bot.
 
 **Scope boundary.** This repo is distribution only. The product application
@@ -14,7 +14,7 @@ handed over as data.
 
 ```
 bot/          Telegram bot — commands, question delivery, attribution capture
-scripts/      Operational scripts — seed, broadcast, verify, backup, attribution
+scripts/      Operational scripts — seed, daily, broadcast, verify, backup, attribution
 deploy/       systemd unit, cron entries, deploy script
 landing/      Static landing page (no build step)
 data/         Question CSVs and the SQLite database — gitignored except sample.csv
@@ -23,6 +23,32 @@ tests/        Standard-library unittest suite, no dependencies
 
 `CLAUDE.md` is the short version for agents: the hard rules, the invariants
 the tests protect, and how to get set up.
+
+## Data model
+
+Three tables in one SQLite file at `DB_PATH`. No ORM, no migrations — the
+schema lives in `bot/db.py` and is applied with `CREATE TABLE IF NOT EXISTS`
+on every start.
+
+```
+users      user_id, username, first_seen, source_channel, last_active, is_active
+events     event_id, user_id, event_type, question_id, is_correct, created_at
+questions  question_id, subject, stem, option_a..option_d, correct_option,
+           explanation, scheduled_date
+```
+
+`event_type` is one of `start`, `question_served`, `answer_submitted`,
+`cta_clicked`. `events` is append-only and is the only thing `/stats` reads,
+so a reported number can never drift from what actually happened.
+
+Two partial unique indexes do the idempotency work: one answer per
+(user, question), and one serve per (user, question). Both are enforced by
+storage rather than by handler convention, because the first is what stops a
+double-tap double-counting and the second is what makes a cron retry safe.
+
+All timestamps are UTC, and so is SQLite's `date('now')`, so day boundaries
+compare without a timezone library. `TIMEZONE` in `.env` is for humans reading
+logs.
 
 ## Running locally
 
@@ -38,7 +64,9 @@ pip install -r requirements.txt
 cp .env.example .env
 $EDITOR .env                       # at minimum: token and bot username
 
-python scripts/seed_questions.py data/sample.csv
+# --schedule-from puts the sample questions on consecutive days starting today,
+# so there is something live to answer immediately.
+python scripts/seed.py data/sample.csv --schedule-from "$(date -u +%F)"
 python scripts/verify.py           # should report 0 failures
 python -m bot.main
 ```
@@ -49,33 +77,59 @@ no public URL, and no webhook setup — a laptop behind NAT works fine.
 Talk to a throwaway bot locally, not the production one: two processes polling
 the same token will steal updates from each other.
 
+To exercise the daily send without waiting for cron:
+
+```bash
+python scripts/daily.py --dry-run       # who would get what, nothing sent
+python scripts/daily.py                 # sends today's question
+```
+
+Only `BOT_TOKEN` and `TELEGRAM_BOT_USERNAME` are needed to get a bot talking.
+Set `CTA_URL` too or answered questions come back without a button, which is
+the one thing this experiment exists to measure. Set `ADMIN_ID` to your own
+Telegram user id or `/stats` answers nobody — the bot logs the id on `/start`.
+
 ### Commands
 
 | Command | Who | What |
 | --- | --- | --- |
-| `/start [source]` | anyone | Subscribe; records the deep-link source |
-| `/question [subject]` | anyone | Next unseen question, optionally by subject |
-| `/score` | anyone | Correct / attempted |
-| `/stop` | anyone | Stop messages; answers are kept |
-| `/stats` | admins | Subscriber counts and the attribution funnel |
+| `/start [payload]` | anyone | Subscribe, record the deep-link channel, send today's question |
+| `/question` | anyone | Re-send today's question |
+| `/score` | anyone | Correct / answered |
+| `/stop` | anyone | Stop the daily question; answers are kept |
+| `/stats` | admin | Users, retention, and the per-channel funnel |
 
-Admins are the chat IDs listed in `ADMIN_CHAT_IDS`. Non-admins get silence
+The admin is the single Telegram user id in `ADMIN_ID`. Non-admins get silence
 from `/stats`, not an error — no reason to advertise that it exists.
+
+### What a user sees
+
+`/start` creates the user row, stamps the channel they arrived from, and sends
+the question scheduled for today (falling back to the most recent scheduled
+one, so someone joining mid-week is not told to come back later). The question
+arrives with four inline buttons. Tapping one records the answer, replaces the
+message with the verdict and the explanation, and puts the CTA button
+underneath.
+
+Answers are recorded once per question: the keyboard disappears after the
+first tap, but an old message further up the chat can still be tapped, and
+that second tap changes nothing.
 
 ## Attribution
 
 Every acquisition channel gets its own code. Mint a link:
 
 ```bash
-python scripts/attribution.py link reddit-r-medicine --landing
-# https://t.me/your_bot?start=reddit-r-medicine
-# https://example.com/?s=reddit-r-medicine
+python scripts/attribution.py link tg_group1 --landing
+# https://t.me/your_bot?start=tg_group1
+# https://example.com/?s=tg_group1
 ```
 
 Either link works. The Telegram one sends people straight to the bot; the
 landing one gives them a page first and forwards the code into the deep link.
-The bot records the code on first `/start` and never overwrites it, so a
-subscriber's origin stays stable even if they later click a different link.
+The bot records the code as `source_channel` on the **first** `/start` and
+never overwrites it, so a user's origin stays stable even if they later arrive
+through a different campaign. No payload at all records `direct`.
 
 Read it back:
 
@@ -83,14 +137,53 @@ Read it back:
 python scripts/attribution.py report
 ```
 
-`opens` counts `/start` presses (including returning users), `signups` counts
-distinct new subscribers, and `engaged` counts those who answered at least one
-question — the last column is the one that says whether a channel sent people
-who actually wanted this.
+`users` counts distinct people first seen on that channel, `served` those sent
+at least one question, and `answered` those who tapped an option — the last
+column is the one that says whether a channel sent people who actually wanted
+this.
+
+Click-through on the CTA is measured at the destination, not here: Telegram
+sends no update when a URL button is tapped, so the bot stamps `uid`, `src`,
+and `qid` onto `CTA_URL` and the landing side joins them back. `NOTES.md`
+records what it would take to log clicks first-party instead.
 
 There is no third-party analytics anywhere in this repo, and the landing page
 loads nothing from an external origin. Attribution is a query against our own
 database.
+
+### Checking a link before you spend on it
+
+Attribution is write-once. A user who arrives with no source code can never be
+attributed afterwards, because nothing was recorded to work back from — so the
+time to find a broken link is before the campaign, not after.
+
+```bash
+python scripts/attribution.py link tg_group1
+python scripts/attribution.py link insta_bio
+# ... click each link from a fresh Telegram account, then:
+python scripts/attribution.py report
+```
+
+`link` prints the exact deep link to test; `report` shows what landed, per
+channel. Codes go through the same normalisation the bot applies to the inbound
+payload, so the URL printed is character-for-character the one that has to
+appear in the report. Every channel in the database is listed, so a tag that
+never shows up — or one you did not expect — is where a typo'd tag or a
+redirect that ate the `?start=` payload shows up.
+
+```bash
+python scripts/attribution_guard.py
+```
+
+Exits non-zero if any user's `source_channel` is empty or skipped normalisation
+(which splits one channel across two rows in the report), or if an event points
+at a user row that is gone — `events` holds no source of its own, so that
+activity can never be attributed again. A missing database is a failure rather
+than a pass. Run it before a launch, or from cron next to `verify.py`.
+
+`scripts/CHECKLIST.md` is the manual walkthrough behind all of this: mint a
+link, put a real shortener in front of it, click from a fresh account, confirm
+the code landed, and delete the test rows afterwards.
 
 ## Loading questions
 
@@ -98,13 +191,36 @@ Real question data is **never** committed. `data/sample.csv` documents the
 format; see `data/README.md` for the column reference.
 
 ```bash
-python scripts/seed_questions.py data/questions.csv --check   # validate only
-python scripts/seed_questions.py data/questions.csv           # load
+python scripts/seed.py data/questions.csv --check   # validate only
+python scripts/seed.py data/questions.csv           # load
+python scripts/seed.py data/questions.csv --schedule-from 2026-08-11
 ```
 
-Loading is idempotent and keyed on `id`: re-running an edited CSV updates rows
-in place. Validation runs over the whole file first, so a malformed row fails
-the batch rather than half-loading it.
+Loading is idempotent and keyed on `question_id`: re-running an edited CSV
+updates rows in place. Validation runs over the whole file first, so a
+malformed row fails the batch rather than half-loading it.
+
+`scheduled_date` is what makes a question the question of the day — one per
+date, and the loader refuses a file that puts two on the same day. Leave the
+column blank and pass `--schedule-from` to lay rows out on consecutive days in
+file order.
+
+## The daily question
+
+```bash
+python scripts/daily.py --dry-run
+python scripts/daily.py
+```
+
+Cron-triggered, from `deploy/crontab.example` at `BROADCAST_HOUR`. It can only
+ever send the question whose `scheduled_date` is today — there is no free-text
+mode — and nothing scheduled for today means nothing is sent.
+
+Safe to run twice. Recipients are the active users with no `question_served`
+event for that question, so a retry after a partial failure reaches exactly
+the people who were missed and a double-fire reaches nobody. Users who have
+blocked or deleted the bot come back as `Forbidden`, are marked inactive, and
+the run carries on.
 
 ## Broadcasting
 
@@ -113,10 +229,36 @@ python scripts/broadcast.py --text "New questions are up."          # dry run
 python scripts/broadcast.py --text "New questions are up." --send   # delivers
 ```
 
-Dry run is the default. A broadcast reaches every active subscriber and cannot
-be recalled, so `--send` is required, `DRY_RUN=true` in `.env` overrides it,
-and it is deliberately absent from cron. Subscribers who have blocked the bot
-are deactivated automatically when their send returns `Forbidden`.
+This is the ad-hoc announcement path, separate from the daily question. Dry run
+is the default. It reaches every active user with arbitrary text and cannot be
+recalled, so `--send` is required, `DRY_RUN=true` in `.env` overrides it, and it
+is deliberately absent from cron. Users who have blocked the bot are
+deactivated automatically when their send returns `Forbidden`.
+
+## Stats
+
+`/stats` in the chat, admin only. It prints, all UTC:
+
+- **total / active users** — active means they have not sent `/stop` and have
+  not blocked the bot
+- **new today** — user rows whose `first_seen` is today
+- **DAU** — distinct users with any event today, not just answers
+- **answers** — answers submitted today
+- **D1 / D7 return rate** — of the users whose day N has *fully elapsed*, the
+  share who had any event on the calendar day exactly N days after they first
+  appeared. Exactly-day-N, not within-N-days: a within-N figure conflates D1
+  into D7 and both drift upward forever. Someone who signed up this morning is
+  not in the D1 cohort at all, so a good launch day cannot depress the number.
+  Small cohorts make these numbers noisy — `n/a` means no cohort is old enough
+  yet.
+- **by source_channel** — users, active, served, and answered per channel
+
+The same funnel, with a `--since` filter and CSV output, is available outside
+Telegram:
+
+```bash
+python scripts/attribution.py report --since 2026-08-01 --csv
+```
 
 ## Deploying
 
@@ -151,10 +293,11 @@ which backs up the database, fast-forwards the branch, syncs the venv, runs
 `verify.py`, renders `landing/dist/`, and restarts the service — failing before
 the restart if verification does not pass.
 
-The landing page is served as static files from `landing/dist/`. It is not
-built from `landing/` directly because `index.html` carries a
-`__BOT_USERNAME__` placeholder that the deploy script substitutes from `.env`;
-that keeps a deploy-specific value out of the repo.
+The landing page is a single self-contained `index.html` — CSS inline, no
+images, no external requests — served from `landing/dist/`. It is not served
+from `landing/` directly because the file carries a `__BOT_USERNAME__`
+placeholder that the deploy script substitutes from `.env`; that keeps a
+deploy-specific value out of the repo.
 
 ```bash
 journalctl -u cohort-bot -f          # logs
@@ -172,10 +315,10 @@ bot, and it prunes anything older than `BACKUP_RETENTION_DAYS`.
 python scripts/backup.py --list
 ```
 
-Snapshots contain subscriber chat IDs. `backups/` is gitignored; if you copy
+Snapshots contain subscriber user IDs. `backups/` is gitignored; if you copy
 snapshots off the box, treat them as personal data.
 
-To restore, stop the service, move the snapshot over `DATABASE_PATH`, delete
+To restore, stop the service, move the snapshot over `DB_PATH`, delete
 any stale `-wal`/`-shm` siblings, and start it again.
 
 ## Testing
@@ -187,9 +330,14 @@ python3 -m unittest discover -s tests
 No install, no plugins, no config — the suite is standard-library `unittest`
 and runs on a bare clone in about two tenths of a second. It covers the
 invariants that are easy to break by accident: first-touch attribution never
-being overwritten, a subscriber never seeing the same question twice, an
-answer being recorded once, a malformed CSV loading nothing at all, and
-pruning only ever deleting files it named itself.
+being overwritten, a question being served once per user, an answer being
+recorded once, `/score` never undoing a `/stop`, the D1/D7 cohort maths, a
+malformed CSV loading nothing at all, and pruning only ever deleting files it
+named itself.
+
+The eleven `bot/render.py` tests skip on a bare clone, because `render.py` is
+the only non-script module that imports `python-telegram-bot`. Everything else
+runs with nothing installed.
 
 `unittest` over pytest is the same call as everywhere else here — pytest is
 nicer to write, but nicer is convenience, and the rule below does not accept
@@ -223,7 +371,7 @@ logged in `NOTES.md`.
 ## Things that must never be committed
 
 - `.env` or any real token
-- `*.db` — the database holds subscriber chat IDs
+- `*.db` — the database holds subscriber user IDs
 - Real question CSVs (`data/*.csv` other than `sample.csv`)
 - Backup snapshots
 

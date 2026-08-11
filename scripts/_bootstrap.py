@@ -1,7 +1,7 @@
 """Put the repo root on sys.path so scripts can be run directly.
 
-    python scripts/seed_questions.py      # works
-    python -m scripts.seed_questions      # also works
+    python scripts/seed.py                # works
+    python -m scripts.seed                # also works
 
 Cron and systemd both invoke scripts by path, so the direct form has to work
 without an installed package or a PYTHONPATH set in three places.
