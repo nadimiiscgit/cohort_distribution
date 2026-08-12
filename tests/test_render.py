@@ -71,6 +71,66 @@ class TestQuestionRendering(unittest.TestCase):
 
 
 @unittest.skipIf(render is None, "python-telegram-bot is not installed")
+class TestMessageLengthLimit(unittest.TestCase):
+    """Telegram refuses anything over 4096 characters.
+
+    The failure this guards is silent and unrecoverable for the user: the
+    answer is recorded before the reply is sent, so an over-long explanation
+    means the message never updates and a second tap only says "already
+    answered". They can never see that explanation.
+    """
+
+    def test_a_normal_explanation_is_untouched(self) -> None:
+        text = render.answer_text(question_row(), "A", True)
+        self.assertIn("The SA node depolarises fastest.", text)
+        self.assertNotIn("trimmed", text)
+
+    def test_an_oversized_explanation_is_trimmed_to_fit(self) -> None:
+        row = question_row(explanation="word " * 3000)
+        text = render.answer_text(row, "A", True)
+        self.assertLessEqual(len(text), render.MAX_MESSAGE)
+        self.assertIn("trimmed", text)
+
+    def test_trimming_keeps_the_verdict_and_the_question(self) -> None:
+        """The explanation is what gets cut — never the answer itself."""
+        row = question_row(explanation="word " * 3000)
+        text = render.answer_text(row, "C", is_correct=False)
+        self.assertIn("Which node sets the pace?", text)
+        self.assertIn("answer is A", text)
+
+    def test_trimming_never_splits_an_html_entity(self) -> None:
+        """A half-written &amp; makes Telegram reject the whole message."""
+        row = question_row(explanation="&" * 5000)
+        text = render.answer_text(row, "A", True)
+        self.assertLessEqual(len(text), render.MAX_MESSAGE)
+        body = text.replace("&amp;", "")
+        self.assertNotIn("&", body, "an entity was cut in half")
+
+    def test_escaping_growth_is_accounted_for(self) -> None:
+        """Every char escapes to 5; a raw-length budget would overshoot."""
+        for filler in ("<", ">", "&", '"'):
+            row = question_row(explanation=filler * 4000)
+            text = render.answer_text(row, "A", True)
+            self.assertLessEqual(len(text), render.MAX_MESSAGE, filler)
+
+    def test_a_long_unbroken_string_still_fits(self) -> None:
+        """No spaces means no word boundary to cut back to."""
+        row = question_row(explanation="x" * 6000)
+        text = render.answer_text(row, "A", True)
+        self.assertLessEqual(len(text), render.MAX_MESSAGE)
+
+    def test_the_worst_real_question_fits(self) -> None:
+        """Measured from the live bank: 7,591 chars rendered before trimming."""
+        row = question_row(
+            subject="Ophthalmology",
+            explanation="Retinoblastoma. " * 480,
+        )
+        text = render.answer_text(row, "B", is_correct=False)
+        self.assertLessEqual(len(text), render.MAX_MESSAGE)
+        self.assertIn("answer is A", text)
+
+
+@unittest.skipIf(render is None, "python-telegram-bot is not installed")
 class TestCtaMarkup(unittest.TestCase):
     def test_no_button_without_a_cta_url(self) -> None:
         """The bot must still work when CTA_URL is unset."""
