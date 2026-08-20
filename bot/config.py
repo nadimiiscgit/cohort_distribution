@@ -142,6 +142,15 @@ def questions_csv() -> Path:
     return get_path("QUESTIONS_CSV", "data/questions.csv")
 
 
+def access_log_pattern() -> str:
+    """Glob matching the web server access logs scripts/import_clicks.py reads.
+
+    Not a `Path`: this is expanded with `glob`, so a rotation pattern like
+    `/var/log/nginx/access.log*` is a valid value.
+    """
+    return get("ACCESS_LOG_PATH", "/var/log/nginx/access.log") or ""
+
+
 def validate() -> list[str]:
     """Return a list of human-readable problems. Empty list means all good."""
     problems: list[str] = []

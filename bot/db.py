@@ -3,9 +3,16 @@
 One file, no ORM. Every function takes an explicit connection so scripts can
 share a transaction and tests can point at a temp file.
 
-Three tables and nothing else. `events` is the only append-only table and the
-only thing /stats reads: every number the experiment reports is a query over
-it, so a metric can never drift from what actually happened.
+`events` is the only append-only table and the only thing /stats reads: every
+number the experiment reports is a query over it, so a metric can never drift
+from what actually happened.
+
+`link_clicks` sits outside that rule on purpose. A landing-page click has no
+user — it happens before Telegram is involved — so it cannot be an event
+without making `events.user_id` nullable and weakening the one thing that
+table guarantees. It is a daily tally, not a log: one row per (day, channel),
+so re-importing a log corrects a count instead of appending to it, and no
+per-visitor row is ever stored.
 
 All timestamps are UTC ISO-8601 strings. SQLite's `date('now')` is also UTC,
 so day-boundary comparisons stay consistent without a timezone library.
@@ -81,6 +88,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_events_one_answer_per_question
 -- is a no-op instead of a second copy in everyone's chat.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_one_serve_per_question
     ON events(user_id, question_id) WHERE event_type = 'question_served';
+
+-- Landing-page clicks per channel per day, imported hourly from the web
+-- server log by scripts/import_clicks.py. The composite primary key is what
+-- makes that import idempotent: re-reading a day overwrites its tally rather
+-- than adding a second one.
+CREATE TABLE IF NOT EXISTS link_clicks (
+    day            TEXT NOT NULL,
+    source_channel TEXT NOT NULL,
+    clicks         INTEGER NOT NULL CHECK (clicks >= 0),
+    PRIMARY KEY (day, source_channel)
+);
 """
 
 
@@ -414,3 +432,51 @@ def source_funnel(
         " ORDER BY users DESC, u.source_channel",
         params,
     ).fetchall()
+
+
+# --------------------------------------------------------------------------
+# Link clicks — the funnel's missing denominator
+# --------------------------------------------------------------------------
+
+
+def clicks_by_channel(conn: sqlite3.Connection, since: str | None = None) -> dict[str, int]:
+    """Total landing-page clicks per source_channel.
+
+    Without this the funnel starts at `users`, which makes a link nobody
+    clicked and a link everybody bounced off look identical.
+    """
+    where = "WHERE day >= ?" if since else ""
+    params = (since,) if since else ()
+    rows = conn.execute(
+        "SELECT source_channel, COALESCE(SUM(clicks), 0) AS clicks"
+        f" FROM link_clicks {where} GROUP BY source_channel",
+        params,
+    ).fetchall()
+    return {r["source_channel"]: r["clicks"] for r in rows}
+
+
+def clicks_on_day(conn: sqlite3.Connection, day: str) -> int:
+    """Clicks already tallied for an ISO date, across all channels."""
+    return conn.execute(
+        "SELECT COALESCE(SUM(clicks), 0) AS c FROM link_clicks WHERE day = ?",
+        (day,),
+    ).fetchone()["c"]
+
+
+def replace_clicks_for_day(
+    conn: sqlite3.Connection, day: str, tallies: dict[str, int]
+) -> int:
+    """Overwrite one day's tallies. Returns the day's new total.
+
+    Replacing rather than adding is what lets the importer run hourly over a
+    log it has already partly read. Channels absent from `tallies` are deleted
+    for that day, so a corrected re-import can take a count down as well as up
+    — the caller decides whether a decrease is legitimate.
+    """
+    conn.execute("DELETE FROM link_clicks WHERE day = ?", (day,))
+    conn.executemany(
+        "INSERT INTO link_clicks (day, source_channel, clicks) VALUES (?, ?, ?)",
+        [(day, channel, count) for channel, count in sorted(tallies.items())],
+    )
+    conn.commit()
+    return sum(tallies.values())

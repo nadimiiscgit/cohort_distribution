@@ -38,23 +38,38 @@ def cmd_report(args: argparse.Namespace) -> int:
     db.init_schema(conn)
 
     rows = db.source_funnel(conn, since=args.since)
-    if not rows:
-        print("no users yet")
+    clicks = db.clicks_by_channel(conn, since=args.since)
+    if not rows and not clicks:
+        print("no users or clicks yet")
         return 0
 
-    records = [
-        {
-            "source_channel": r["source_channel"],
-            "users": r["users"],
-            "active": r["active"],
-            "served": r["served"],
-            "answered": r["answered"],
-            "answered_pct": (
-                round(100 * r["answered"] / r["users"]) if r["users"] else 0
-            ),
-        }
-        for r in rows
-    ]
+    # A channel with clicks and no users is the most useful row in the table —
+    # it is the one that is not working — but it has no users row to be found
+    # by, so the click channels are unioned in rather than left out.
+    by_channel = {r["source_channel"]: r for r in rows}
+    channels = list(by_channel) + sorted(c for c in clicks if c not in by_channel)
+
+    records = []
+    for channel in channels:
+        r = by_channel.get(channel)
+        users = r["users"] if r else 0
+        clicked = clicks.get(channel, 0)
+        answered = r["answered"] if r else 0
+        records.append(
+            {
+                "source_channel": channel,
+                "clicks": clicked,
+                "users": users,
+                "active": r["active"] if r else 0,
+                "served": r["served"] if r else 0,
+                "answered": answered,
+                # None rather than 0 when no clicks have been imported: an
+                # unmeasured channel has an unknown conversion rate, not a zero
+                # one, and 0% reads as "this link failed".
+                "signup_pct": round(100 * users / clicked) if clicked else None,
+                "answered_pct": round(100 * answered / users) if users else 0,
+            }
+        )
 
     if args.csv:
         writer = csv.DictWriter(sys.stdout, fieldnames=list(records[0].keys()))
@@ -65,30 +80,42 @@ def cmd_report(args: argparse.Namespace) -> int:
     labels = [r["source_channel"] for r in records] + ["channel"]
     width = max(len(label) for label in labels)
     header = (
-        f"{'channel':<{width}}  {'users':>6} {'active':>7} {'served':>7} "
-        f"{'answered':>9} {'ans%':>5}"
+        f"{'channel':<{width}}  {'clicks':>7} {'users':>6} {'active':>7} "
+        f"{'served':>7} {'answered':>9} {'join%':>6} {'ans%':>5}"
     )
     print(header)
     print("-" * len(header))
     for r in records:
+        join = "-" if r["signup_pct"] is None else f"{r['signup_pct']}%"
         print(
-            f"{r['source_channel']:<{width}}  {r['users']:>6} {r['active']:>7} "
-            f"{r['served']:>7} {r['answered']:>9} {r['answered_pct']:>4}%"
+            f"{r['source_channel']:<{width}}  {r['clicks']:>7} {r['users']:>6} "
+            f"{r['active']:>7} {r['served']:>7} {r['answered']:>9} "
+            f"{join:>6} {r['answered_pct']:>4}%"
         )
 
-    columns = ("users", "active", "served", "answered")
+    columns = ("clicks", "users", "active", "served", "answered")
     totals = {k: sum(r[k] for r in records) for k in columns}
+    total_join = (
+        f"{round(100 * totals['users'] / totals['clicks'])}%"
+        if totals["clicks"]
+        else "-"
+    )
     print("-" * len(header))
     print(
-        f"{'TOTAL':<{width}}  {totals['users']:>6} {totals['active']:>7} "
-        f"{totals['served']:>7} {totals['answered']:>9}"
+        f"{'TOTAL':<{width}}  {totals['clicks']:>7} {totals['users']:>6} "
+        f"{totals['active']:>7} {totals['served']:>7} {totals['answered']:>9} "
+        f"{total_join:>6}"
     )
     print(
-        "\nusers    = distinct people first seen on this channel"
+        "\nclicks   = landing-page hits on this tag, preview fetchers excluded\n"
+        "users    = distinct people first seen on this channel"
         " (first touch, frozen)\n"
         "active   = have not stopped and have not blocked the bot\n"
         "served   = were sent at least one question\n"
-        "answered = tapped an option at least once"
+        "answered = tapped an option at least once\n"
+        "join%    = users per click; '-' means no clicks imported for this tag\n"
+        "\nClicks come from the web server log via scripts/import_clicks.py —\n"
+        "a channel shows '-' until that has run."
     )
     return 0
 

@@ -26,20 +26,28 @@ the tests protect, and how to get set up.
 
 ## Data model
 
-Three tables in one SQLite file at `DB_PATH`. No ORM, no migrations — the
+Four tables in one SQLite file at `DB_PATH`. No ORM, no migrations — the
 schema lives in `bot/db.py` and is applied with `CREATE TABLE IF NOT EXISTS`
 on every start.
 
 ```
-users      user_id, username, first_seen, source_channel, last_active, is_active
-events     event_id, user_id, event_type, question_id, is_correct, created_at
-questions  question_id, subject, stem, option_a..option_d, correct_option,
-           explanation, scheduled_date
+users        user_id, username, first_seen, source_channel, last_active, is_active
+events       event_id, user_id, event_type, question_id, is_correct, created_at
+questions    question_id, subject, stem, option_a..option_d, correct_option,
+             explanation, scheduled_date
+link_clicks  day, source_channel, clicks
 ```
 
 `event_type` is one of `start`, `question_served`, `answer_submitted`,
 `cta_clicked`. `events` is append-only and is the only thing `/stats` reads,
 so a reported number can never drift from what actually happened.
+
+`link_clicks` is the one table outside that rule, and it is separate for a
+reason: a landing-page click has no user — it happens before Telegram is
+involved — so it cannot be an event without making `events.user_id` nullable
+and weakening the only thing that table guarantees. It is a daily tally rather
+than a log, one row per (day, channel), which is also what makes re-importing
+a log idempotent and means no per-visitor row is ever stored.
 
 Two partial unique indexes do the idempotency work: one answer per
 (user, question), and one serve per (user, question). Both are enforced by
@@ -137,10 +145,43 @@ Read it back:
 python scripts/attribution.py report
 ```
 
-`users` counts distinct people first seen on that channel, `served` those sent
-at least one question, and `answered` those who tapped an option — the last
-column is the one that says whether a channel sent people who actually wanted
+`clicks` counts landing-page hits, `users` counts distinct people first seen on
+that channel, `served` those sent at least one question, and `answered` those
+who tapped an option. `join%` — users per click — is the column that separates
+a channel with a small, well-matched audience from one with a large,
+indifferent one, and `ans%` says whether the people it sent actually wanted
 this.
+
+Channels that were clicked but produced no user still get a row. A link with
+five hundred clicks and nothing to show for it is the most useful line in the
+table, and it has no user to be found by.
+
+### Counting clicks
+
+`clicks` and `join%` stay empty until the click importer has run. It reads the
+`?s=<code>` hits out of the web server's own access log — there is no script on
+the landing page and no third party involved:
+
+```bash
+python scripts/import_clicks.py                          # dry run
+python scripts/import_clicks.py --write                  # store
+python scripts/import_clicks.py '/var/log/nginx/access.log*' --write
+```
+
+Set `ACCESS_LOG_PATH` in `.env` and it runs hourly from cron. Clicks are stored
+in `link_clicks` as one tally per (day, channel) rather than one row per
+visitor: re-running replaces a day's tally instead of adding to it, so a missed
+hour catches itself up and a double run is harmless — and nothing
+visitor-identifying is kept at all. If a rotated log would make a day's count
+go *down*, it refuses and says so, because losing counts quietly is worse than
+not writing; `--force` overrides that.
+
+Link-preview fetchers are excluded. Telegram, WhatsApp and Slack fetch every
+URL that passes through them, so without filtering, pasting a campaign link
+into a channel registers a click before any human has seen it — and it would
+skew hardest in exactly the channel we most want to measure. The run prints how
+many hits it dropped, which is worth glancing at: an implausible ratio means
+the filter needs a new user-agent token.
 
 Click-through on the CTA is measured at the destination, not here: Telegram
 sends no update when a URL button is tapped, so the bot stamps `uid`, `src`,
@@ -149,7 +190,7 @@ records what it would take to log clicks first-party instead.
 
 There is no third-party analytics anywhere in this repo, and the landing page
 loads nothing from an external origin. Attribution is a query against our own
-database.
+database and a log we already write.
 
 ### Checking a link before you spend on it
 
@@ -271,6 +312,9 @@ git clone https://github.com/nadimiiscgit/cohort_distribution.git /srv/cohort_di
 chown -R cohort:cohort /srv/cohort_distribution
 mkdir -p /var/log/cohort && chown cohort:cohort /var/log/cohort
 
+# so the hourly click import can read the web server's access log
+usermod -aG adm cohort
+
 cp /srv/cohort_distribution/deploy/cohort-bot.service /etc/systemd/system/
 systemctl daemon-reload
 
@@ -332,8 +376,8 @@ and runs on a bare clone in about two tenths of a second. It covers the
 invariants that are easy to break by accident: first-touch attribution never
 being overwritten, a question being served once per user, an answer being
 recorded once, `/score` never undoing a `/stop`, the D1/D7 cohort maths, a
-malformed CSV loading nothing at all, and pruning only ever deleting files it
-named itself.
+malformed CSV loading nothing at all, pruning only ever deleting files it
+named itself, and re-importing a log never inflating a click tally.
 
 The eleven `bot/render.py` tests skip on a bare clone, because `render.py` is
 the only non-script module that imports `python-telegram-bot`. Everything else
