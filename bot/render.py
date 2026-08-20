@@ -25,6 +25,11 @@ CTA_LABEL = "Open the full question bank →"
 # Callback payload prefix for the four answer buttons: ans:<question_id>:<A-D>.
 ANSWER_PREFIX = "ans"
 
+# Telegram's hard limit on a message body. Anything longer is refused outright,
+# so an over-long explanation has to be trimmed rather than sent and hoped for.
+MAX_MESSAGE = 4096
+TRIMMED_MARK = "…\n\n<i>(explanation trimmed to fit)</i>"
+
 
 def question_text(row) -> str:
     """The question as first shown: subject, stem, four lettered options."""
@@ -49,8 +54,48 @@ def answer_keyboard(question_id: str) -> InlineKeyboardMarkup:
     )
 
 
+def _fit_explanation(explanation: str, budget: int) -> str:
+    """Escape `explanation`, trimming it to `budget` characters if it overruns.
+
+    Trims the raw text and re-escapes rather than cutting the escaped string:
+    slicing escaped text can split an entity like `&amp;` in half, which makes
+    Telegram reject the whole message — the failure this guard exists to stop.
+
+    Cuts back to a word boundary so the trim does not land mid-word.
+    """
+    escaped = html.escape(explanation)
+    if len(escaped) <= budget:
+        return escaped
+
+    room = budget - len(TRIMMED_MARK)
+    if room <= 0:
+        return TRIMMED_MARK.lstrip("…").lstrip()
+
+    # Longest raw prefix whose escaped form still fits.
+    lo, hi = 0, len(explanation)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(html.escape(explanation[:mid])) <= room:
+            lo = mid
+        else:
+            hi = mid - 1
+
+    cut = explanation[:lo]
+    head, sep, _ = cut.rpartition(" ")
+    if sep and len(head) > room // 2:
+        cut = head
+    return html.escape(cut.rstrip()) + TRIMMED_MARK
+
+
 def answer_text(row, chosen: str, is_correct: bool) -> str:
-    """The question, resolved: what they picked, what was right, and why."""
+    """The question, resolved: what they picked, what was right, and why.
+
+    Telegram rejects any message over MAX_MESSAGE characters. A handful of
+    real questions carry explanations long enough to breach it, and the
+    failure is silent and permanent for the user: the answer is recorded
+    before the send, so the edit fails, the message never changes, and tapping
+    again just reports "already answered". Trimming keeps the reply deliverable.
+    """
     if is_correct:
         verdict = f"✅ <b>Correct — {chosen}.</b>"
     else:
@@ -60,7 +105,9 @@ def answer_text(row, chosen: str, is_correct: bool) -> str:
         )
     lines = [question_text(row), "", verdict]
     if row["explanation"]:
-        lines += ["", html.escape(row["explanation"])]
+        # Two newlines join it to the verdict; that separator counts too.
+        budget = MAX_MESSAGE - len("\n".join(lines)) - 2
+        lines += ["", _fit_explanation(row["explanation"], budget)]
     return "\n".join(lines)
 
 

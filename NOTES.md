@@ -220,6 +220,23 @@ they come back on day 7" rather than "have they ever come back".
 **Revisit when:** cohorts are large enough that a rolling window is readable,
 and then add it alongside rather than replacing.
 
+### Measuring CTA click-through — open, and owned by the destination
+The bot stamps `src`, `uid`, and `qid` onto `CTA_URL` on every answered
+question, so a tap arrives at the destination carrying the channel, the user,
+and the question that converted. **Nothing downstream reads them yet.** Until
+the destination logs those parameters, the funnel is measurable up to
+`answered` and blind after it — we can say which channel produces people who
+answer, but not which produces people who click through.
+
+That work is not in this repo and cannot be: the landing side is a separate
+codebase, and rule 1 keeps it that way. What this repo owes it is a stable
+contract, which is the three parameter names above. They are covered by
+`tests/test_attribution.py::TestCtaLink`, so they will not drift silently.
+
+**Revisit when:** the destination starts recording them — at which point a
+join on `uid` against `users.user_id` completes the funnel, and the
+`cta_clicked` event type above becomes writable from an import rather than
+from Telegram.
 ### First-party URL shortener
 A `go.example.com/<code>` service that 302s to a destination and logs the hit.
 Two things genuinely argue for it: links that stay re-pointable after an
